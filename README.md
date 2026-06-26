@@ -3,6 +3,10 @@
 HeishaSim is a platform-independent Python GUI simulator for Panasonic Aquarea heat pump serial traffic.
 It can emulate a heat pump response stream for tools like HeishaMon and can optionally simulate a CZ-TAW1 addon on a second serial port.
 
+## Screenshot
+
+![HeishaSim app window](docs/heishasim-window.png)
+
 ## Features
 
 - Python application (Windows + Linux)
