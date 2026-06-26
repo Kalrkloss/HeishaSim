@@ -52,6 +52,21 @@ It can emulate a heat pump response stream for tools like HeishaMon and can opti
 1. Create and activate a virtual environment (optional but recommended).
 2. Install dependencies:
 
+### Linux Requirements
+
+On Linux, install the GUI and serial runtime prerequisites before launching:
+
+- Python 3
+- `python3-tk`
+- `pyserial`
+
+On Debian/Ubuntu, that usually looks like:
+
+```bash
+sudo apt install python3 python3-tk python3-pip
+python3 -m pip install pyserial
+```
+
 ```bash
 pip install -r requirements.txt
 ```
