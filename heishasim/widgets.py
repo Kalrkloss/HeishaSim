@@ -204,38 +204,25 @@ class ParameterWidget(tk.Frame):
             style=self.combo_style,
         )
         self.mode_combo.pack(side=tk.RIGHT, padx=6, pady=3)
-        self.mode_combo.bind("<<ComboboxSelected>>", self._render_mode)
+        self.mode_combo.bind("<<ComboboxSelected>>", self._on_mode_selected)
 
         self.body = tk.Frame(self, bg="#fbf7ef")
         self.body.pack(fill=tk.BOTH, expand=True)
 
-        # Persistent bottom-right resize handle that works across all display modes.
-        self.resize_grip = tk.Frame(self, width=18, height=18, bg="#fbf7ef", cursor="sizing")
-        self.resize_grip.place(relx=1.0, rely=1.0, anchor="se")
-        self.resize_grip.pack_propagate(False)
-        self.resize_label = tk.Label(
-            self.resize_grip,
-            text="//",
-            bg="#fbf7ef",
-            fg="#8fa4ac",
-            font=("Segoe UI", 8, "bold"),
-        )
-        self.resize_label.pack(fill=tk.BOTH, expand=True)
-
-        self.resize_grip.bind("<ButtonPress-1>", self._start_resize)
-        self.resize_grip.bind("<B1-Motion>", self._do_resize)
-        self.resize_grip.bind("<ButtonRelease-1>", self._stop_resize)
-        self.resize_label.bind("<ButtonPress-1>", self._start_resize)
-        self.resize_label.bind("<B1-Motion>", self._do_resize)
-        self.resize_label.bind("<ButtonRelease-1>", self._stop_resize)
+        self._cursor_zone = None
+        self._bind_resize_events()
 
         self._render_mode()
+        self._bind_resize_to_children()
 
     def set_value(self, value: float) -> None:
         value = max(self.definition.minimum, min(self.definition.maximum, value))
         self.value_var.set(round(value, 2))
         if hasattr(self, "big_value"):
-            self.big_value.configure(text=f"{self.value_var.get():.1f}")
+            try:
+                self.big_value.configure(text=f"{self.value_var.get():.1f}")
+            except tk.TclError:
+                pass
         if hasattr(self, "slider"):
             self.slider.set(self.value_var.get())
         if hasattr(self, "dial"):
@@ -247,6 +234,7 @@ class ParameterWidget(tk.Frame):
     def set_mode(self, mode: DisplayMode) -> None:
         self.mode_var.set(mode)
         self._render_mode()
+        self._bind_resize_to_children()
 
     def get_mode(self) -> DisplayMode:
         return self.mode_var.get()  # type: ignore[return-value]
@@ -268,7 +256,10 @@ class ParameterWidget(tk.Frame):
         self.value_var.set(round(value, 2))
         self.entry_var.set(f"{self.value_var.get():.2f}")
         if hasattr(self, "big_value"):
-            self.big_value.configure(text=f"{self.value_var.get():.1f}")
+            try:
+                self.big_value.configure(text=f"{self.value_var.get():.1f}")
+            except tk.TclError:
+                pass
         if hasattr(self, "dial"):
             self.dial.set(self.value_var.get())
         self.on_change(self.definition.key, self.value_var.get())
@@ -381,7 +372,6 @@ class ParameterWidget(tk.Frame):
         self.header.configure(height=header_h)
         self.title_label.configure(font=("Segoe UI", title_font, "bold"))
         self.mode_combo.configure(width=combo_chars)
-        self.resize_label.configure(font=("Segoe UI", max(8, int(8 * scale)), "bold"))
 
         # Per-widget ttk style scaling to keep controls proportionate to widget size.
         self.style.configure(self.button_style, font=("Segoe UI", ttk_font, "bold"), padding=(button_pad, button_pad))
@@ -434,12 +424,47 @@ class ParameterWidget(tk.Frame):
             self.dial.configure(width=dial_size, height=dial_size)
             self.dial._draw()
 
+    def _on_mode_selected(self, *_args) -> None:
+        self._render_mode()
+        self._bind_resize_to_children()
+
+    def _edge_zone(self, root_x: int, root_y: int) -> str | None:
+        wx = self.winfo_rootx()
+        wy = self.winfo_rooty()
+        w = self.winfo_width()
+        h = self.winfo_height()
+        rel_x = root_x - wx
+        rel_y = root_y - wy
+        zone = 12
+        near_right = rel_x >= w - zone
+        near_bottom = rel_y >= h - zone
+        if near_right and near_bottom:
+            return "se"
+        if near_bottom:
+            return "s"
+        if near_right:
+            return "e"
+        return None
+
+    def _on_edge_motion(self, event) -> None:
+        zone = self._edge_zone(event.x_root, event.y_root)
+        cursors = {"se": "sizing", "s": "sb_v_double_arrow", "e": "sb_h_double_arrow", None: ""}
+        new_cursor = cursors.get(zone)
+        if new_cursor != self._cursor_zone:
+            self._cursor_zone = new_cursor
+            self.configure(cursor=new_cursor)
+
     def _start_resize(self, event) -> None:
+        zone = self._edge_zone(event.x_root, event.y_root)
+        if zone is None:
+            self._resize_state = None
+            return
         self._resize_state = {
             "x": event.x_root,
             "y": event.y_root,
             "width": self.winfo_width(),
             "height": self.winfo_height(),
+            "zone": zone,
         }
 
     def _do_resize(self, event) -> None:
@@ -448,16 +473,43 @@ class ParameterWidget(tk.Frame):
 
         dx = event.x_root - self._resize_state["x"]
         dy = event.y_root - self._resize_state["y"]
-        new_width = max(self.min_width, self._resize_state["width"] + dx)
-        new_height = max(self.min_height, self._resize_state["height"] + dy)
+        zone = self._resize_state["zone"]
+        new_width = self._resize_state["width"]
+        new_height = self._resize_state["height"]
+        if zone in ("e", "se"):
+            new_width = max(self.min_width, self._resize_state["width"] + dx)
+        if zone in ("s", "se"):
+            new_height = max(self.min_height, self._resize_state["height"] + dy)
 
         self.configure(width=new_width, height=new_height)
-        self.resize_grip.lift()
         if self.on_resize is not None:
             self.on_resize(self.definition.key, int(new_width), int(new_height))
 
     def _stop_resize(self, _event) -> None:
         self._resize_state = None
+
+    def _bind_resize_events(self) -> None:
+        for target in (self, self.body):
+            target.bind("<Motion>", self._on_edge_motion, add="+")
+            target.bind("<ButtonPress-1>", self._start_resize, add="+")
+            target.bind("<B1-Motion>", self._do_resize, add="+")
+            target.bind("<ButtonRelease-1>", self._stop_resize, add="+")
+
+    def _bind_resize_to_children(self) -> None:
+        stack = list(self.body.winfo_children())
+        while stack:
+            w = stack.pop()
+            try:
+                w.bind("<Motion>", self._on_edge_motion, add="+")
+                w.bind("<ButtonPress-1>", self._start_resize, add="+")
+                w.bind("<B1-Motion>", self._do_resize, add="+")
+                w.bind("<ButtonRelease-1>", self._stop_resize, add="+")
+            except tk.TclError:
+                pass
+            try:
+                stack.extend(w.winfo_children())
+            except tk.TclError:
+                pass
 
 
 class RelayWidget(tk.Frame):
@@ -510,26 +562,34 @@ class RelayWidget(tk.Frame):
         self.toggle_btn = ttk.Button(self.body, text="", command=self._toggle)
         self.toggle_btn.pack(pady=(0, 8))
 
-        self.resize_grip = tk.Frame(self, width=18, height=18, bg="#fbf7ef", cursor="sizing")
-        self.resize_grip.place(relx=1.0, rely=1.0, anchor="se")
-        self.resize_grip.pack_propagate(False)
-        self.resize_label = tk.Label(
-            self.resize_grip,
-            text="//",
-            bg="#fbf7ef",
-            fg="#8fa4ac",
-            font=("Segoe UI", 8, "bold"),
-        )
-        self.resize_label.pack(fill=tk.BOTH, expand=True)
-
-        self.resize_grip.bind("<ButtonPress-1>", self._start_resize)
-        self.resize_grip.bind("<B1-Motion>", self._do_resize)
-        self.resize_grip.bind("<ButtonRelease-1>", self._stop_resize)
-        self.resize_label.bind("<ButtonPress-1>", self._start_resize)
-        self.resize_label.bind("<B1-Motion>", self._do_resize)
-        self.resize_label.bind("<ButtonRelease-1>", self._stop_resize)
+        self._cursor_zone = None
+        self._bind_resize_events()
+        self._bind_resize_to_children()
 
         self._refresh_visual()
+
+    def _bind_resize_events(self) -> None:
+        for target in (self, self.body):
+            target.bind("<Motion>", self._on_edge_motion, add="+")
+            target.bind("<ButtonPress-1>", self._start_resize, add="+")
+            target.bind("<B1-Motion>", self._do_resize, add="+")
+            target.bind("<ButtonRelease-1>", self._stop_resize, add="+")
+
+    def _bind_resize_to_children(self) -> None:
+        stack = list(self.body.winfo_children())
+        while stack:
+            w = stack.pop()
+            try:
+                w.bind("<Motion>", self._on_edge_motion, add="+")
+                w.bind("<ButtonPress-1>", self._start_resize, add="+")
+                w.bind("<B1-Motion>", self._do_resize, add="+")
+                w.bind("<ButtonRelease-1>", self._stop_resize, add="+")
+            except tk.TclError:
+                pass
+            try:
+                stack.extend(w.winfo_children())
+            except tk.TclError:
+                pass
 
     def set_state(self, value: bool) -> None:
         self.value_var.set(bool(value))
@@ -555,12 +615,43 @@ class RelayWidget(tk.Frame):
         self.detail_label.configure(text=detail, bg=body_bg, fg=accent)
         self.toggle_btn.configure(text="Switch Off" if enabled else "Switch On")
 
+    def _edge_zone(self, root_x: int, root_y: int) -> str | None:
+        wx = self.winfo_rootx()
+        wy = self.winfo_rooty()
+        w = self.winfo_width()
+        h = self.winfo_height()
+        rel_x = root_x - wx
+        rel_y = root_y - wy
+        zone = 12
+        near_right = rel_x >= w - zone
+        near_bottom = rel_y >= h - zone
+        if near_right and near_bottom:
+            return "se"
+        if near_bottom:
+            return "s"
+        if near_right:
+            return "e"
+        return None
+
+    def _on_edge_motion(self, event) -> None:
+        zone = self._edge_zone(event.x_root, event.y_root)
+        cursors = {"se": "sizing", "s": "sb_v_double_arrow", "e": "sb_h_double_arrow", None: ""}
+        new_cursor = cursors.get(zone)
+        if new_cursor != self._cursor_zone:
+            self._cursor_zone = new_cursor
+            self.configure(cursor=new_cursor)
+
     def _start_resize(self, event) -> None:
+        zone = self._edge_zone(event.x_root, event.y_root)
+        if zone is None:
+            self._resize_state = None
+            return
         self._resize_state = {
             "x": event.x_root,
             "y": event.y_root,
             "width": self.winfo_width(),
             "height": self.winfo_height(),
+            "zone": zone,
         }
 
     def _do_resize(self, event) -> None:
@@ -569,11 +660,15 @@ class RelayWidget(tk.Frame):
 
         dx = event.x_root - self._resize_state["x"]
         dy = event.y_root - self._resize_state["y"]
-        new_width = max(self.min_width, self._resize_state["width"] + dx)
-        new_height = max(self.min_height, self._resize_state["height"] + dy)
+        zone = self._resize_state["zone"]
+        new_width = self._resize_state["width"]
+        new_height = self._resize_state["height"]
+        if zone in ("e", "se"):
+            new_width = max(self.min_width, self._resize_state["width"] + dx)
+        if zone in ("s", "se"):
+            new_height = max(self.min_height, self._resize_state["height"] + dy)
 
         self.configure(width=new_width, height=new_height)
-        self.resize_grip.lift()
         if self.on_resize is not None:
             self.on_resize(self.definition.key, int(new_width), int(new_height))
 
@@ -583,3 +678,142 @@ class RelayWidget(tk.Frame):
 
 class AddonRelayWidget(RelayWidget):
     pass
+
+
+class BinaryWidget(tk.Frame):
+    def __init__(self, master, definition: ParameterDefinition, value: float, on_change, on_resize=None):
+        super().__init__(master, bg="#fbf7ef", bd=1, relief=tk.RIDGE)
+        self.definition = definition
+        self.on_change = on_change
+        self.on_resize = on_resize
+        self.value_var = tk.BooleanVar(value=bool(value))
+        self.min_width = 140
+        self.min_height = 100
+        self._resize_state = None
+        self._cursor_zone = None
+
+        self.configure(width=200, height=120)
+        self.pack_propagate(False)
+
+        self.header = tk.Frame(self, bg="#244b5a", height=26)
+        self.header.pack(fill=tk.X)
+
+        self.title_label = tk.Label(
+            self.header,
+            text=definition.label,
+            bg="#244b5a",
+            fg="#f7f5ef",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.title_label.pack(side=tk.LEFT, padx=6)
+
+        self.body = tk.Frame(self, bg="#fbf7ef")
+        self.body.pack(fill=tk.BOTH, expand=True)
+
+        self.status_label = tk.Label(
+            self.body,
+            text="",
+            bg="#fbf7ef",
+            fg="#ffffff",
+            font=("Segoe UI", 24, "bold"),
+        )
+        self.status_label.pack(expand=True)
+
+        self.bind("<Button-1>", self._toggle)
+        self.body.bind("<Button-1>", self._toggle)
+        self.status_label.bind("<Button-1>", self._toggle)
+
+        self._bind_resize_events()
+
+        self._refresh()
+
+    def set_value(self, value: float) -> None:
+        self.value_var.set(bool(value))
+        self._refresh()
+
+    def get_value(self) -> float:
+        return float(self.value_var.get())
+
+    def set_mode(self, mode: str) -> None:
+        pass
+
+    def get_mode(self) -> str:
+        return "binary"
+
+    def _toggle(self, event=None) -> None:
+        new_value = not bool(self.value_var.get())
+        self.value_var.set(new_value)
+        self._refresh()
+        self.on_change(self.definition.key, float(new_value))
+
+    def _refresh(self) -> None:
+        enabled = bool(self.value_var.get())
+        bg = "#1d6b3f" if enabled else "#9e3b2b"
+        text = "ON" if enabled else "OFF"
+        self.body.configure(bg=bg)
+        self.status_label.configure(text=text, bg=bg)
+
+    def _edge_zone(self, root_x: int, root_y: int) -> str | None:
+        wx = self.winfo_rootx()
+        wy = self.winfo_rooty()
+        w = self.winfo_width()
+        h = self.winfo_height()
+        rel_x = root_x - wx
+        rel_y = root_y - wy
+        zone = 12
+        near_right = rel_x >= w - zone
+        near_bottom = rel_y >= h - zone
+        if near_right and near_bottom:
+            return "se"
+        if near_bottom:
+            return "s"
+        if near_right:
+            return "e"
+        return None
+
+    def _on_edge_motion(self, event) -> None:
+        zone = self._edge_zone(event.x_root, event.y_root)
+        cursors = {"se": "sizing", "s": "sb_v_double_arrow", "e": "sb_h_double_arrow", None: ""}
+        new_cursor = cursors.get(zone)
+        if new_cursor != self._cursor_zone:
+            self._cursor_zone = new_cursor
+            self.configure(cursor=new_cursor)
+
+    def _bind_resize_events(self) -> None:
+        for target in (self, self.body):
+            target.bind("<Motion>", self._on_edge_motion, add="+")
+            target.bind("<ButtonPress-1>", self._start_resize, add="+")
+            target.bind("<B1-Motion>", self._do_resize, add="+")
+            target.bind("<ButtonRelease-1>", self._stop_resize, add="+")
+
+    def _start_resize(self, event) -> None:
+        zone = self._edge_zone(event.x_root, event.y_root)
+        if zone is None:
+            self._resize_state = None
+            return
+        self._resize_state = {
+            "x": event.x_root,
+            "y": event.y_root,
+            "width": self.winfo_width(),
+            "height": self.winfo_height(),
+            "zone": zone,
+        }
+
+    def _do_resize(self, event) -> None:
+        if not self._resize_state:
+            return
+        dx = event.x_root - self._resize_state["x"]
+        dy = event.y_root - self._resize_state["y"]
+        zone = self._resize_state["zone"]
+        new_width = self._resize_state["width"]
+        new_height = self._resize_state["height"]
+        if zone in ("e", "se"):
+            new_width = max(self.min_width, self._resize_state["width"] + dx)
+        if zone in ("s", "se"):
+            new_height = max(self.min_height, self._resize_state["height"] + dy)
+        self.configure(width=new_width, height=new_height)
+        if self.on_resize is not None:
+            self.on_resize(self.definition.key, int(new_width), int(new_height))
+
+    def _stop_resize(self, _event) -> None:
+        self._resize_state = None

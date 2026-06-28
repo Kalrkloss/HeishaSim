@@ -43,6 +43,18 @@ PARAMETERS: list[ParameterDefinition] = [
     ParameterDefinition("outlet_target", "Outlet Target", "degC", 20, 65, 0.5, 55, 153),
     ParameterDefinition("compressor_freq", "Compressor Freq", "Hz", 0, 120, 1, 40, 166, "minus_one"),
     ParameterDefinition("pump_duty", "Pump Duty", "pct", 0, 100, 1, 60, 172, "minus_one"),
+    ParameterDefinition("heatpump_state", "Heatpump State", "", 0, 1, 1, 1, 4, "raw"),
+    ParameterDefinition("operating_mode", "Operating Mode", "", 0, 5, 1, 1, 6, "raw"),
+    ParameterDefinition("water_pressure", "Water Pressure", "bar", 0, 4, 0.1, 1.5, 125, "raw"),
+    ParameterDefinition("z1_water_temp", "Z1 Water Temp", "degC", 5, 60, 0.5, 35, 145),
+    ParameterDefinition("z2_water_temp", "Z2 Water Temp", "degC", 5, 60, 0.5, 25, 146),
+    ParameterDefinition("z1_water_target", "Z1 Water Target", "degC", 20, 60, 0.5, 40, 147),
+    ParameterDefinition("z2_water_target", "Z2 Water Target", "degC", 20, 60, 0.5, 25, 148),
+    ParameterDefinition("discharge_temp", "Discharge Temp", "degC", 0, 130, 1, 60, 155),
+    ParameterDefinition("room_thermostat", "Room Thermostat", "degC", 10, 40, 0.5, 22, 156),
+    ParameterDefinition("ipm_temp", "IPM Temp", "degC", 0, 100, 1, 40, 162),
+    ParameterDefinition("compressor_current", "Compressor Current", "A", 0, 25, 0.5, 5, 165, "raw"),
+    ParameterDefinition("fan1_speed", "Fan1 Speed", "rpm", 0, 1000, 10, 400, 173, "raw"),
 ]
 
 
