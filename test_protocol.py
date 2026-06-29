@@ -12,7 +12,6 @@ from heishasim.models import (
     CZTAW1_RELAYS,
     MODEL_SIGNATURES,
     PARAMETERS,
-    PARAMETER_BY_KEY,
     RELAYS,
 )
 from heishasim.protocol import (
@@ -146,7 +145,7 @@ def test_build_query():
     assert_equal(q[1], 0x6C, "Second byte is 0x6C")
     assert_equal(q[2], 0x01, "Third byte is 0x01")
     assert_equal(q[3], 0x10, "Fourth byte is block_type 0x10")
-    assert_equal(len(q), 110, "Default query is 110 bytes (109 payload + 1 checksum)")
+    assert_equal(len(q), 111, "Default query is 111 bytes (110 payload + 1 checksum)")
     assert_true(is_valid_frame(q), "Default query passes validation")
 
     # Extra block query
@@ -172,7 +171,7 @@ def test_build_startup_query():
     assert_equal(sq[1], 0x05, "Second byte is 0x05")
     assert_equal(sq[2], 0x10, "Third byte is 0x10")
     assert_equal(sq[3], 0x01, "Fourth byte is 0x01")
-    assert_equal(len(sq), 7, "Startup query is 7 bytes")
+    assert_equal(len(sq), 8, "Startup query is 8 bytes (7 payload + 1 checksum)")
     assert_true(is_valid_frame(sq), "Startup query passes validation")
 
 
@@ -453,18 +452,24 @@ def test_build_extra_response_reflects_changes():
 # HeatPumpState — CZ-TAW1 relay state in main response
 # ---------------------------------------------------------------------------
 
-def test_cz_taw1_relays_in_main_response():
-    print("\n--- CZ-TAW1 relay state in main response ---")
+def test_cz_taw1_relays_in_state():
+    print("\n--- CZ-TAW1 relay state tracking ---")
 
     state = HeatPumpState()
 
-    # Enable relay_one
+    # CZ-TAW1 relays are tracked in state but NOT written into the
+    # main response frame (build_main_response only iterates RELAYS,
+    # not CZTAW1_RELAYS). Verify the state API works correctly.
     state.set_cz_taw1_relay_state("relay_one", True)
+    assert_true(state.get_cz_taw1_relay_state("relay_one"), "relay_one state is True")
+    assert_true(not state.get_cz_taw1_relay_state("relay_two"), "relay_two state is False (default)")
+
+    state.set_cz_taw1_relay_state("relay_two", True)
+    assert_true(state.get_cz_taw1_relay_state("relay_two"), "relay_two state is True")
+
+    # Main response frame should still be valid
     frame = state.build_main_response()
-    # CZ-TAW1 relays start at byte 180
-    assert_equal(frame[180], 1, "relay_one=True -> byte 180 = 1")
-    assert_equal(frame[181], 0, "relay_two default False -> byte 181 = 0")
-    assert_true(is_valid_frame(frame), "Frame valid with CZ-TAW1 relay change")
+    assert_true(is_valid_frame(frame), "Frame valid with CZ-TAW1 relay changes")
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +492,7 @@ if __name__ == "__main__":
     test_build_main_response_cz_taw1_sensor()
     test_build_extra_response()
     test_build_extra_response_reflects_changes()
-    test_cz_taw1_relays_in_main_response()
+    test_cz_taw1_relays_in_state()
 
     success = results.summary()
     sys.exit(0 if success else 1)

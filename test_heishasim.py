@@ -5,14 +5,14 @@ Runs the Tkinter app programmatically and tests all major interactions.
 from __future__ import annotations
 
 import json
-import os
 import sys
-import tkinter as tk
 from pathlib import Path
 
 # Add the project to path so the 'heishasim' package can be imported.
 # The package lives next door inside HeishaSim/, while this script is in temp/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "HeishaSim"))
+
+import contextlib
 
 from heishasim.app import CONFIG_FILE, DEFAULT_VISIBLE_PARAMETERS, HeishaSimApp
 from heishasim.models import PARAMETERS, RELAYS
@@ -346,7 +346,7 @@ def run_tests():
 
                 dhw = find_widget_by_key(app, "dhw_target")
                 if dhw:
-                    initial_w = dhw.winfo_width()
+                    dhw.winfo_width()
                     # Simulate resize by configuring
                     dhw.configure(width=300, height=250)
                     app.update_idletasks()
@@ -836,7 +836,7 @@ def run_tests():
                     assert_equal(
                         app.cz_taw1_relay_z_order,
                         z_before,
-                        f"Clicking CZ-TAW1 child button keeps z-order list stable"
+                        "Clicking CZ-TAW1 child button keeps z-order list stable"
                     )
 
                 # Disable addon mode to clean up
@@ -1167,10 +1167,8 @@ def run_tests():
             finally:
                 # Clean up
                 app._closing = True
-                try:
+                with contextlib.suppress(Exception):
                     app.after_cancel(app._log_after_id)
-                except Exception:
-                    pass
                 app._log_after_id = None
                 app.destroy()
 

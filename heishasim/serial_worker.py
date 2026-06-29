@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
-from .protocol import build_query, build_startup_query, is_valid_frame
+from .protocol import HeatPumpState, build_query, build_startup_query, is_valid_frame
 
 try:
     import serial
     from serial.tools import list_ports
 except Exception:  # pragma: no cover - optional dependency guard
-    serial = None
-    list_ports = None
+    serial = None  # type: ignore[assignment]
+    list_ports = None  # type: ignore[assignment]
 
 
 StatusCallback = Callable[[str], None]
@@ -35,7 +35,7 @@ class HeatPumpSerialServer(threading.Thread):
     def __init__(
         self,
         settings: SerialSettings,
-        state,
+        state: HeatPumpState,
         on_status: StatusCallback,
         on_frame: FrameCallback,
     ) -> None:
@@ -82,22 +82,22 @@ class HeatPumpSerialServer(threading.Thread):
             self.on_status(f"Serial error on {self.settings.port}: {exc}")
 
     def _read_frame(self, ser) -> bytes | None:
-        first = ser.read(1)
+        first: bytes = ser.read(1)
         if not first:
             return None
 
-        header = first[0]
+        header: int = first[0]
         if header not in (0x31, 0x71, 0xF1):
             return None
 
-        length_byte = ser.read(1)
+        length_byte: bytes = ser.read(1)
         if not length_byte:
             return None
 
-        length = length_byte[0]
-        total = length + 3
-        remaining = total - 2
-        payload = ser.read(remaining)
+        length: int = length_byte[0]
+        total: int = length + 3
+        remaining: int = total - 2
+        payload: bytes = ser.read(remaining)
         if len(payload) != remaining:
             return None
         return bytes([header, length]) + payload

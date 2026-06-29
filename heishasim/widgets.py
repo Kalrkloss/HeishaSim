@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import math
 import tkinter as tk
 from tkinter import ttk
+from typing import Any
 
 from .models import DisplayMode, ParameterDefinition, RelayDefinition
 
@@ -96,7 +98,6 @@ class DialControl(tk.Canvas):
         size = max(80, int(outer_radius * 2 + max(16, outer_radius * 0.24)))
         tick_outer = outer_radius
         major_tick_inner = outer_radius - max(10, size * 0.14)
-        minor_tick_inner = outer_radius - max(6, size * 0.09)
         arc_width = max(6, int(size * 0.07))
         ring_width = max(1, int(size * 0.015))
         label_font_size = max(8, int(size * 0.055))
@@ -172,7 +173,7 @@ class ParameterWidget(tk.Frame):
         self.value_var = tk.DoubleVar(value=value)
         self.min_width = 220
         self.min_height = 190
-        self._resize_state = None
+        self._resize_state: dict[str, Any] | None = None
         self.style = ttk.Style(self)
         self.style_prefix = f"Heisha.{self.definition.key}"
         self.button_style = f"{self.style_prefix}.TButton"
@@ -247,7 +248,7 @@ class ParameterWidget(tk.Frame):
         self.body = tk.Frame(self, bg="#fbf7ef")
         self.body.pack(fill=tk.BOTH, expand=True)
 
-        self._cursor_zone = None
+        self._cursor_zone: str | None = None
         self._bind_resize_events()
 
         self._render_mode()
@@ -257,10 +258,8 @@ class ParameterWidget(tk.Frame):
         value = max(self.definition.minimum, min(self.definition.maximum, value))
         self.value_var.set(round(value, 2))
         if hasattr(self, "big_value"):
-            try:
+            with contextlib.suppress(tk.TclError):
                 self.big_value.configure(text=f"{self.value_var.get():.1f}")
-            except tk.TclError:
-                pass
         if hasattr(self, "slider"):
             self.slider.set(self.value_var.get())
         if hasattr(self, "dial"):
@@ -312,10 +311,8 @@ class ParameterWidget(tk.Frame):
         self.value_var.set(round(value, 2))
         self.entry_var.set(f"{self.value_var.get():.2f}")
         if hasattr(self, "big_value"):
-            try:
+            with contextlib.suppress(tk.TclError):
                 self.big_value.configure(text=f"{self.value_var.get():.1f}")
-            except tk.TclError:
-                pass
         if hasattr(self, "dial"):
             self.dial.set(self.value_var.get())
         self.on_change(self.definition.key, self.value_var.get())
@@ -423,7 +420,6 @@ class ParameterWidget(tk.Frame):
         button_pad = max(2, int(5 * scale))
         combo_pad = max(2, int(4 * scale))
         slider_thickness = max(12, int(16 * scale))
-        slider_trough = max(8, int(10 * scale))
 
         self.header.configure(height=header_h)
         self.title_label.configure(font=("Segoe UI", title_font, "bold"))
@@ -452,10 +448,8 @@ class ParameterWidget(tk.Frame):
             self.controls.pack_configure(padx=pad_x, pady=pad_y)
         if hasattr(self, "entry"):
             self.entry.configure(width=entry_chars)
-            try:
+            with contextlib.suppress(tk.TclError):
                 self.entry.configure(font=("Segoe UI", ttk_font))
-            except tk.TclError:
-                pass
         if hasattr(self, "down_btn"):
             self.down_btn.configure(width=btn_chars)
         if hasattr(self, "up_btn"):
@@ -508,7 +502,7 @@ class ParameterWidget(tk.Frame):
         new_cursor = cursors.get(zone)
         if new_cursor != self._cursor_zone:
             self._cursor_zone = new_cursor
-            self.configure(cursor=new_cursor)
+            self.configure(cursor=new_cursor or "")
 
     def _start_resize(self, event) -> None:
         zone = self._edge_zone(event.x_root, event.y_root)
@@ -562,10 +556,8 @@ class ParameterWidget(tk.Frame):
                 w.bind("<ButtonRelease-1>", self._stop_resize, add="+")
             except tk.TclError:
                 pass
-            try:
+            with contextlib.suppress(tk.TclError):
                 stack.extend(w.winfo_children())
-            except tk.TclError:
-                pass
 
 
 class RelayWidget(tk.Frame):
@@ -578,7 +570,7 @@ class RelayWidget(tk.Frame):
         self.value_var = tk.BooleanVar(value=bool(value))
         self.min_width = 220
         self.min_height = 160
-        self._resize_state = None
+        self._resize_state: dict[str, Any] | None = None
 
         self.configure(width=240, height=170)
         self.pack_propagate(False)
@@ -649,7 +641,7 @@ class RelayWidget(tk.Frame):
         self.toggle_btn = ttk.Button(self.body, text="", command=self._toggle)
         self.toggle_btn.pack(pady=(0, 8))
 
-        self._cursor_zone = None
+        self._cursor_zone: str | None = None
         self._bind_resize_events()
         self._bind_resize_to_children()
 
@@ -673,10 +665,8 @@ class RelayWidget(tk.Frame):
                 w.bind("<ButtonRelease-1>", self._stop_resize, add="+")
             except tk.TclError:
                 pass
-            try:
+            with contextlib.suppress(tk.TclError):
                 stack.extend(w.winfo_children())
-            except tk.TclError:
-                pass
 
     def set_state(self, value: bool) -> None:
         self.value_var.set(bool(value))
@@ -744,7 +734,7 @@ class RelayWidget(tk.Frame):
         new_cursor = cursors.get(zone)
         if new_cursor != self._cursor_zone:
             self._cursor_zone = new_cursor
-            self.configure(cursor=new_cursor)
+            self.configure(cursor=new_cursor or "")
 
     def _start_resize(self, event) -> None:
         zone = self._edge_zone(event.x_root, event.y_root)
@@ -795,8 +785,8 @@ class BinaryWidget(tk.Frame):
         self.value_var = tk.BooleanVar(value=bool(value))
         self.min_width = 140
         self.min_height = 100
-        self._resize_state = None
-        self._cursor_zone = None
+        self._resize_state: dict[str, Any] | None = None
+        self._cursor_zone: str | None = None
 
         self.configure(width=200, height=120)
         self.pack_propagate(False)
@@ -908,7 +898,7 @@ class BinaryWidget(tk.Frame):
         new_cursor = cursors.get(zone)
         if new_cursor != self._cursor_zone:
             self._cursor_zone = new_cursor
-            self.configure(cursor=new_cursor)
+            self.configure(cursor=new_cursor or "")
 
     def _bind_resize_events(self) -> None:
         for target in (self, self.body):
