@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import queue
 import tkinter as tk
+from collections.abc import Callable
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
+from typing import Any
 
-from .models import CZTAW1_EXTERNAL_SENSOR, CZTAW1_RELAYS, MODEL_SIGNATURES, PARAMETERS, PARAMETER_BY_KEY, RELAYS
+from .models import CZTAW1_EXTERNAL_SENSOR, CZTAW1_RELAYS, MODEL_SIGNATURES, PARAMETER_BY_KEY, PARAMETERS, RELAYS
 from .protocol import HeatPumpState
 from .serial_worker import CZTAW1AddonSimulator, HeatPumpSerialServer, SerialSettings, available_serial_ports
 from .widgets import AddonRelayWidget, BinaryWidget, ParameterWidget, RelayWidget
-
 
 CONFIG_FILE = Path.home() / ".heishasim" / "heishasim_config.json"
 DEFAULT_VISIBLE_PARAMETERS = [p.key for p in PARAMETERS[:4]]
@@ -21,7 +23,7 @@ class ConfigDialog(tk.Toplevel):
         super().__init__(master)
         self.title("Simulator Settings")
         self.resizable(False, False)
-        self.result = None
+        self.result: dict[str, Any] | None = None
 
         ports = available_serial_ports()
         models = list(MODEL_SIGNATURES.keys())
@@ -88,7 +90,7 @@ class HeishaSimApp(tk.Tk):
         self.state_engine = HeatPumpState()
         self.log_queue: queue.Queue[str] = queue.Queue()
 
-        self.config_data = {
+        self.config_data: dict[str, Any] = {
             "port": "",
             "model": "H/J Generic",
             "addon_enabled": False,
@@ -128,10 +130,10 @@ class HeishaSimApp(tk.Tk):
         self.cz_taw1_sensor_widget: tuple[ParameterWidget, int] | None = None
         self.dragging = {"item": None, "x": 0, "y": 0}
 
-        self.serial_server = None
-        self.addon_server = None
+        self.serial_server: HeatPumpSerialServer | None = None
+        self.addon_server: CZTAW1AddonSimulator | None = None
         self._closing = False
-        self._log_after_id = None
+        self._log_after_id: str | None = None
 
         self._load_config()
         self._build_ui()
@@ -213,7 +215,7 @@ class HeishaSimApp(tk.Tk):
         self.parameters_menu.add_separator()
         self.cz_taw1_menu = tk.Menu(self.parameters_menu, tearoff=0)
         self.parameters_menu.add_cascade(label="CZ-TAW1", menu=self.cz_taw1_menu)
-        self.cz_taw1_menu_index = self.parameters_menu.index("end")
+        self.cz_taw1_menu_index: int = self.parameters_menu.index("end")  # type: ignore[assignment]
         for relay in CZTAW1_RELAYS:
             flag = tk.BooleanVar(value=relay.key in self.config_data.get("visible_cz_taw1_relays", []))
             self.cz_taw1_relay_flags[relay.key] = flag
@@ -274,7 +276,7 @@ class HeishaSimApp(tk.Tk):
             is_binary = definition.minimum == 0 and definition.maximum == 1 and definition.step == 1
 
             if is_binary:
-                widget = BinaryWidget(
+                widget: ParameterWidget | BinaryWidget = BinaryWidget(  # type: ignore[no-redef]
                     self.canvas,
                     definition,
                     value,
@@ -326,7 +328,7 @@ class HeishaSimApp(tk.Tk):
             if not is_binary:
                 widget.mode_combo.bind(
                     "<<ComboboxSelected>>",
-                    lambda _e, k=key, w=widget, wid=window_id: self._on_mode_changed(k, w, wid),
+                    lambda _e, k=key, w=widget, wid=window_id: self._on_mode_changed(k, w, wid),  # type: ignore[call-overload]
                     add="+",
                 )
 
@@ -432,11 +434,11 @@ class HeishaSimApp(tk.Tk):
             self._bind_foreground_clicks(widget, relay.key, self._bring_cz_taw1_widget_to_front)
 
         if self.cz_taw1_sensor_flag.get():
-            value = self.state_engine.get_cz_taw1_external_sensor_temp()
-            widget = ParameterWidget(
+            sensor_value: float = self.state_engine.get_cz_taw1_external_sensor_temp()
+            sensor_widget = ParameterWidget(
                 self.canvas,
                 CZTAW1_EXTERNAL_SENSOR,
-                value,
+                sensor_value,
                 self._on_cz_taw1_sensor_change,
                 on_close=self._close_cz_taw1_item,
                 on_resize=self._on_cz_taw1_sensor_resize,
@@ -448,7 +450,7 @@ class HeishaSimApp(tk.Tk):
             if saved_size:
                 width = max(220, int(saved_size.get("width", 260)))
                 height = max(190, int(saved_size.get("height", 220)))
-            widget.configure(width=width, height=height)
+            sensor_widget.configure(width=width, height=height)
 
             saved_pos = self.config_data.get("cz_taw1_external_sensor_position", {})
             if saved_pos:
@@ -457,11 +459,11 @@ class HeishaSimApp(tk.Tk):
                 x = 30 + (len(CZTAW1_RELAYS) % 3) * 290
                 y = 430
 
-            window_id = self.canvas.create_window(x, y, anchor=tk.NW, window=widget, width=width, height=height)
-            self.cz_taw1_sensor_widget = (widget, window_id)
+            window_id = self.canvas.create_window(x, y, anchor=tk.NW, window=sensor_widget, width=width, height=height)
+            self.cz_taw1_sensor_widget = (sensor_widget, window_id)
             self.cz_taw1_relay_z_order.append(CZTAW1_EXTERNAL_SENSOR.key)
-            self._bind_drag(widget, window_id, CZTAW1_EXTERNAL_SENSOR.key, self._bring_cz_taw1_widget_to_front)
-            self._bind_foreground_clicks(widget, CZTAW1_EXTERNAL_SENSOR.key, self._bring_cz_taw1_widget_to_front)
+            self._bind_drag(sensor_widget, window_id, CZTAW1_EXTERNAL_SENSOR.key, self._bring_cz_taw1_widget_to_front)
+            self._bind_foreground_clicks(sensor_widget, CZTAW1_EXTERNAL_SENSOR.key, self._bring_cz_taw1_widget_to_front)
         else:
             if self.cz_taw1_sensor_widget is not None:
                 sensor_widget, sensor_window_id = self.cz_taw1_sensor_widget
@@ -479,10 +481,8 @@ class HeishaSimApp(tk.Tk):
                 continue
             widget, window_id = widget_pair
             self.canvas.tag_raise(window_id)
-            try:
+            with contextlib.suppress(tk.TclError):
                 widget.lift()
-            except tk.TclError:
-                pass
 
     def _reapply_relay_z_order(self) -> None:
         for key in self.relay_z_order:
@@ -491,10 +491,8 @@ class HeishaSimApp(tk.Tk):
                 continue
             widget, window_id = widget_pair
             self.canvas.tag_raise(window_id)
-            try:
+            with contextlib.suppress(tk.TclError):
                 widget.lift()
-            except tk.TclError:
-                pass
 
     def _reapply_cz_taw1_relay_z_order(self) -> None:
         for key in self.cz_taw1_relay_z_order:
@@ -503,10 +501,8 @@ class HeishaSimApp(tk.Tk):
                 continue
             widget, window_id = widget_pair
             self.canvas.tag_raise(window_id)
-            try:
+            with contextlib.suppress(tk.TclError):
                 widget.lift()
-            except tk.TclError:
-                pass
         if self.cz_taw1_sensor_widget is not None:
             _, sensor_window = self.cz_taw1_sensor_widget
             self.canvas.tag_raise(sensor_window)
@@ -529,10 +525,8 @@ class HeishaSimApp(tk.Tk):
             return
         widget, window_id = widget_pair
         self.canvas.tag_raise(window_id)
-        try:
+        with contextlib.suppress(tk.TclError):
             widget.lift()
-        except tk.TclError:
-            pass
 
     def _bring_relay_to_front(self, key: str) -> None:
         # Single-window raise for the same reason as _bring_widget_to_front:
@@ -548,26 +542,22 @@ class HeishaSimApp(tk.Tk):
             return
         widget, window_id = widget_pair
         self.canvas.tag_raise(window_id)
-        try:
+        with contextlib.suppress(tk.TclError):
             widget.lift()
-        except tk.TclError:
-            pass
 
     def _bring_cz_taw1_widget_to_front(self, key: str) -> None:
         widget_pair = self.cz_taw1_relay_widgets.get(key)
         if widget_pair is not None:
             widget, window_id = widget_pair
             self.canvas.tag_raise(window_id)
-            try:
+            with contextlib.suppress(tk.TclError):
                 widget.lift()
-            except tk.TclError:
-                pass
             return
         if self.cz_taw1_sensor_widget is not None and key == CZTAW1_EXTERNAL_SENSOR.key:
             _, sensor_window = self.cz_taw1_sensor_widget
             self.canvas.tag_raise(sensor_window)
 
-    def _bind_foreground_clicks(self, root_widget: tk.Widget, key: str, bring_to_front=None) -> None:
+    def _bind_foreground_clicks(self, root_widget: tk.Widget, key: str, bring_to_front: Callable[[str], None] | None = None) -> None:
         if bring_to_front is None:
             bring_to_front = self._bring_widget_to_front
 
@@ -577,14 +567,10 @@ class HeishaSimApp(tk.Tk):
         stack = [root_widget]
         while stack:
             widget = stack.pop()
-            try:
+            with contextlib.suppress(tk.TclError):
                 widget.bind("<ButtonPress-1>", _bring, add="+")
-            except tk.TclError:
-                pass
-            try:
-                stack.extend(widget.winfo_children())
-            except tk.TclError:
-                pass
+            with contextlib.suppress(tk.TclError):
+                stack.extend(widget.winfo_children())  # type: ignore[arg-type]
 
     def _on_mode_changed(self, key: str, widget: ParameterWidget, window_id: int) -> None:
         self._remember_mode(key)
@@ -680,7 +666,7 @@ class HeishaSimApp(tk.Tk):
         self._render_cz_taw1_widgets()
         self._log(f"Closed CZ-TAW1 widget: {key}")
 
-    def _bind_cz_taw1_relay_drag(self, widget: AddonRelayWidget, window_id: int, key: str, bring_to_front=None) -> None:
+    def _bind_cz_taw1_relay_drag(self, widget: AddonRelayWidget, window_id: int, key: str, bring_to_front: Callable[[str], None] | None = None) -> None:
         if bring_to_front is None:
             bring_to_front = self._bring_cz_taw1_widget_to_front
 
@@ -719,12 +705,10 @@ class HeishaSimApp(tk.Tk):
 
     def _sync_cz_taw1_menu_state(self) -> None:
         addon_enabled = bool(self.config_data.get("addon_enabled"))
-        try:
+        with contextlib.suppress(tk.TclError):
             self.parameters_menu.entryconfig(self.cz_taw1_menu_index, state=(tk.NORMAL if addon_enabled else tk.DISABLED))
-        except tk.TclError:
-            pass
 
-    def _bind_drag(self, widget: ParameterWidget, window_id: int, key: str, bring_to_front=None) -> None:
+    def _bind_drag(self, widget: ParameterWidget, window_id: int, key: str, bring_to_front: Callable[[str], None] | None = None) -> None:
         if bring_to_front is None:
             bring_to_front = self._bring_widget_to_front
 
@@ -948,8 +932,8 @@ class HeishaSimApp(tk.Tk):
             return
 
         for name in names:
-            self.load_layout_menu.add_command(label=name, command=lambda n=name: self._load_named_layout(n))
-            self.delete_layout_menu.add_command(label=name, command=lambda n=name: self._delete_named_layout(n))
+            self.load_layout_menu.add_command(label=name, command=lambda n=name: self._load_named_layout(n))  # type: ignore[misc]
+            self.delete_layout_menu.add_command(label=name, command=lambda n=name: self._delete_named_layout(n))  # type: ignore[misc]
 
     def _auto_arrange(self) -> None:
         self.config_data["widget_positions"] = {}
@@ -1026,7 +1010,7 @@ class HeishaSimApp(tk.Tk):
         self.serial_server.start()
 
         if self.config_data.get("addon_enabled"):
-            addon_port = self.config_data.get("addon_port", "").strip()
+            addon_port: str = self.config_data.get("addon_port", "").strip()
             if addon_port:
                 self.addon_server = CZTAW1AddonSimulator(
                     settings=SerialSettings(port=addon_port),
@@ -1139,10 +1123,8 @@ class HeishaSimApp(tk.Tk):
         self._closing = True
 
         if self._log_after_id is not None:
-            try:
+            with contextlib.suppress(tk.TclError):
                 self.after_cancel(self._log_after_id)
-            except tk.TclError:
-                pass
             self._log_after_id = None
 
         try:
@@ -1150,14 +1132,10 @@ class HeishaSimApp(tk.Tk):
             self._save_config()
         finally:
             # Ensure the Tk event loop exits even if shutdown steps throw.
-            try:
+            with contextlib.suppress(tk.TclError):
                 self.quit()
-            except tk.TclError:
-                pass
-            try:
+            with contextlib.suppress(tk.TclError):
                 self.destroy()
-            except tk.TclError:
-                pass
 
 
 def main() -> None:

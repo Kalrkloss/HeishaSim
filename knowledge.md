@@ -27,6 +27,14 @@ python main.py
 
 # Run tests
 python test_heishasim.py
+python test_protocol.py
+
+# Lint (ruff)
+python -m ruff check .
+python -m ruff check --fix .       # auto-fix
+
+# Type-check (mypy)
+python -m mypy heishasim/
 ```
 
 **Note:** `tkinter` cannot be pip-installed. On Linux: `sudo apt install python3-tk`. On Windows/macOS it ships with Python.
