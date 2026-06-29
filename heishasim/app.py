@@ -279,6 +279,7 @@ class HeishaSimApp(tk.Tk):
                     definition,
                     value,
                     self._on_parameter_change,
+                    on_close=self._close_parameter,
                     on_resize=self._on_widget_resize,
                 )
                 width = 200
@@ -293,6 +294,7 @@ class HeishaSimApp(tk.Tk):
                     definition,
                     value,
                     self._on_parameter_change,
+                    on_close=self._close_parameter,
                     on_resize=self._on_widget_resize,
                 )
 
@@ -349,6 +351,7 @@ class HeishaSimApp(tk.Tk):
                 relay,
                 value,
                 self._on_relay_change,
+                on_close=self._close_relay,
                 on_resize=self._on_relay_resize,
             )
 
@@ -403,6 +406,7 @@ class HeishaSimApp(tk.Tk):
                 relay,
                 value,
                 self._on_cz_taw1_relay_change,
+                on_close=self._close_cz_taw1_item,
                 on_resize=self._on_cz_taw1_relay_resize,
             )
 
@@ -434,6 +438,7 @@ class HeishaSimApp(tk.Tk):
                 CZTAW1_EXTERNAL_SENSOR,
                 value,
                 self._on_cz_taw1_sensor_change,
+                on_close=self._close_cz_taw1_item,
                 on_resize=self._on_cz_taw1_sensor_resize,
             )
 
@@ -507,18 +512,46 @@ class HeishaSimApp(tk.Tk):
             self.canvas.tag_raise(sensor_window)
 
     def _bring_widget_to_front(self, key: str) -> None:
+        # Move the bookkeeping list (preserves tests' widget_z_order[-1] == key
+        # expectation and within-group order hints after a fresh render) and
+        # then raise ONLY the target canvas window above all other canvas items.
+        # Raising all parameters here (via _reapply_z_order) could put the
+        # clicked parameter above other parameters, but it could also disturb
+        # the relative order between parameters and other widget types. A
+        # single tag_raise on the target window brings it to the absolute
+        # foreground regardless of which other widget type is on top.
         if key not in self.widget_z_order:
             return
         self.widget_z_order = [k for k in self.widget_z_order if k != key]
         self.widget_z_order.append(key)
-        self._reapply_z_order()
+        widget_pair = self.widgets.get(key)
+        if widget_pair is None:
+            return
+        widget, window_id = widget_pair
+        self.canvas.tag_raise(window_id)
+        try:
+            widget.lift()
+        except tk.TclError:
+            pass
 
     def _bring_relay_to_front(self, key: str) -> None:
+        # Single-window raise for the same reason as _bring_widget_to_front:
+        # a full _reapply_relay_z_order only touches relay windows and can
+        # leave a relay below CZ-TAW1 widgets even after reordering. Targeting
+        # just the key window with tag_raise lifts it above every canvas item.
         if key not in self.relay_z_order:
             return
         self.relay_z_order = [k for k in self.relay_z_order if k != key]
         self.relay_z_order.append(key)
-        self._reapply_relay_z_order()
+        widget_pair = self.relay_widgets.get(key)
+        if widget_pair is None:
+            return
+        widget, window_id = widget_pair
+        self.canvas.tag_raise(window_id)
+        try:
+            widget.lift()
+        except tk.TclError:
+            pass
 
     def _bring_cz_taw1_widget_to_front(self, key: str) -> None:
         widget_pair = self.cz_taw1_relay_widgets.get(key)
@@ -604,6 +637,48 @@ class HeishaSimApp(tk.Tk):
         if widget_pair is not None:
             _, window_id = widget_pair
             self.canvas.itemconfigure(window_id, width=int(width), height=int(height))
+
+    def _close_parameter(self, key: str) -> None:
+        """Close button handler for parameter widgets.
+
+        Flips the visibility flag, removes the key from persistent config
+        (so the widget stays closed across reloads), and re-renders. Mirrors
+        the existing Parameters menu toggle UX.
+        """
+        flag = self.parameter_flags.get(key)
+        if flag is not None and flag.get():
+            flag.set(False)
+        visible = self.config_data.get("visible_parameters", [])
+        if key in visible:
+            self.config_data["visible_parameters"] = [k for k in visible if k != key]
+        self._render_parameter_widgets()
+        self._log(f"Closed parameter widget: {key}")
+
+    def _close_relay(self, key: str) -> None:
+        """Close button handler for relay widgets."""
+        flag = self.relay_flags.get(key)
+        if flag is not None and flag.get():
+            flag.set(False)
+        visible = self.config_data.get("visible_relays", [])
+        if key in visible:
+            self.config_data["visible_relays"] = [k for k in visible if k != key]
+        self._render_relay_widgets()
+        self._log(f"Closed relay widget: {key}")
+
+    def _close_cz_taw1_item(self, key: str) -> None:
+        """Close button handler for CZ-TAW1 relays or the external sensor."""
+        relay_flag = self.cz_taw1_relay_flags.get(key)
+        if relay_flag is not None and relay_flag.get():
+            relay_flag.set(False)
+        if key == CZTAW1_EXTERNAL_SENSOR.key and self.cz_taw1_sensor_flag.get():
+            self.cz_taw1_sensor_flag.set(False)
+        visible_relays = self.config_data.get("visible_cz_taw1_relays", [])
+        if key in visible_relays:
+            self.config_data["visible_cz_taw1_relays"] = [
+                k for k in visible_relays if k != key
+            ]
+        self._render_cz_taw1_widgets()
+        self._log(f"Closed CZ-TAW1 widget: {key}")
 
     def _bind_cz_taw1_relay_drag(self, widget: AddonRelayWidget, window_id: int, key: str, bring_to_front=None) -> None:
         if bring_to_front is None:

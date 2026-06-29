@@ -162,10 +162,11 @@ class DialControl(tk.Canvas):
 
 
 class ParameterWidget(tk.Frame):
-    def __init__(self, master, definition: ParameterDefinition, value: float, on_change, on_resize=None):
+    def __init__(self, master, definition: ParameterDefinition, value: float, on_change, on_close=None, on_resize=None):
         super().__init__(master, bg="#fbf7ef", bd=1, relief=tk.RIDGE)
         self.definition = definition
         self.on_change = on_change
+        self.on_close = on_close
         self.on_resize = on_resize
         self.mode_var = tk.StringVar(value="number")
         self.value_var = tk.DoubleVar(value=value)
@@ -185,6 +186,43 @@ class ParameterWidget(tk.Frame):
 
         self.header = tk.Frame(self, bg="#244b5a", height=30)
         self.header.pack(fill=tk.X)
+
+        # Close button in the upper-left corner. Use tk.Button (not
+        # ttk.Button) so the colors stay readable on the dark header
+        # background regardless of the active ttk theme - ttk themes
+        # would otherwise render "X" with low contrast.
+        self.close_btn = tk.Button(
+            self.header,
+            text="X",
+            width=2,
+            command=self._on_close,
+            bg="#244b5a",
+            fg="#f7f5ef",
+            activebackground="#3a6776",
+            activeforeground="#ffffff",
+            relief=tk.FLAT,
+            bd=0,
+            padx=4,
+            pady=0,
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.close_btn.pack(side=tk.LEFT, padx=(4, 0), pady=2)
+
+        # Real X clicks must do two things reliably:
+        # 1. NOT start a drag. We bind <ButtonPress-1> and return "break" -
+        #    Tk stops both the close_btn bindtag chain AND ancestor
+        #    propagation for that event.
+        # 2. Close the widget. Returning "break" from <ButtonPress-1> skips
+        #    Tk's Button class binding on press, so the matching
+        #    <ButtonRelease-1> class binding never sees the button as
+        #    "armed" and never invokes `command` for real mouse clicks.
+        #    We bind <ButtonRelease-1> directly to _on_close_btn_release,
+        #    which calls _on_close() and returns "break" so the close_btn
+        #    bindtag chain stops right after - no double-fire. .invoke()
+        #    still works because `command=self._on_close` is set on the
+        #    Button constructor for headless test paths.
+        self.close_btn.bind("<ButtonPress-1>", lambda _event: "break")
+        self.close_btn.bind("<ButtonRelease-1>", self._on_close_btn_release)
 
         self.title_label = tk.Label(
             self.header,
@@ -238,6 +276,24 @@ class ParameterWidget(tk.Frame):
 
     def get_mode(self) -> DisplayMode:
         return self.mode_var.get()  # type: ignore[return-value]
+
+    def _on_close(self) -> None:
+        """Close button handler - notify the app to remove this widget."""
+        if self.on_close is not None:
+            self.on_close(self.definition.key)
+
+    def _on_close_btn_release(self, _event) -> str:
+        """<ButtonRelease-1> handler that closes the widget on real clicks.
+
+        Required because returning "break" from <ButtonPress-1> skips Tk's
+        Button class binding "arm" step, so the matching <ButtonRelease-1>
+        class binding never invokes `command` for real mouse clicks. We
+        bind <ButtonRelease-1> directly so the close fires reliably;
+        returning "break" stops the close_btn bindtag chain after we run
+        so the command never fires twice.
+        """
+        self._on_close()
+        return "break"
 
     def _adjust(self, direction: int) -> None:
         new_value = self.value_var.get() + (self.definition.step * direction)
@@ -513,10 +569,11 @@ class ParameterWidget(tk.Frame):
 
 
 class RelayWidget(tk.Frame):
-    def __init__(self, master, definition: RelayDefinition, value: bool, on_change, on_resize=None):
+    def __init__(self, master, definition: RelayDefinition, value: bool, on_change, on_close=None, on_resize=None):
         super().__init__(master, bg="#fbf7ef", bd=1, relief=tk.RIDGE)
         self.definition = definition
         self.on_change = on_change
+        self.on_close = on_close
         self.on_resize = on_resize
         self.value_var = tk.BooleanVar(value=bool(value))
         self.min_width = 220
@@ -528,6 +585,36 @@ class RelayWidget(tk.Frame):
 
         self.header = tk.Frame(self, bg="#244b5a", height=30)
         self.header.pack(fill=tk.X)
+
+        # Close button in the upper-left corner. Use tk.Button (not
+        # ttk.Button) so the colors stay readable on the dark header
+        # background regardless of the active ttk theme.
+        self.close_btn = tk.Button(
+            self.header,
+            text="X",
+            width=2,
+            command=self._on_close,
+            bg="#244b5a",
+            fg="#f7f5ef",
+            activebackground="#3a6776",
+            activeforeground="#ffffff",
+            relief=tk.FLAT,
+            bd=0,
+            padx=4,
+            pady=0,
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.close_btn.pack(side=tk.LEFT, padx=(4, 0), pady=2)
+
+        # See ParameterWidget for the rationale: the drag-prevention
+        # <ButtonPress-1> "break" stops Tk's Button class arm step, so the
+        # matching <ButtonRelease-1> class binding never invokes `command`
+        # for real mouse clicks. We bind <ButtonRelease-1> directly to
+        # _on_close_btn_release so real clicks reliably close the widget,
+        # regardless of class-binding arming. Returns "break" so nothing
+        # else in the close_btn bindtag chain runs after we fire.
+        self.close_btn.bind("<ButtonPress-1>", lambda _event: "break")
+        self.close_btn.bind("<ButtonRelease-1>", self._on_close_btn_release)
 
         self.title_label = tk.Label(
             self.header,
@@ -597,6 +684,24 @@ class RelayWidget(tk.Frame):
 
     def get_state(self) -> bool:
         return bool(self.value_var.get())
+
+    def _on_close(self) -> None:
+        """Close button handler - notify the app to remove this widget."""
+        if self.on_close is not None:
+            self.on_close(self.definition.key)
+
+    def _on_close_btn_release(self, _event) -> str:
+        """<ButtonRelease-1> handler that closes the widget on real clicks.
+
+        Required because returning "break" from <ButtonPress-1> skips Tk's
+        Button class binding "arm" step, so the matching <ButtonRelease-1>
+        class binding never invokes `command` for real mouse clicks. We
+        bind <ButtonRelease-1> directly so the close fires reliably;
+        returning "break" stops the close_btn bindtag chain after we run
+        so the command never fires twice.
+        """
+        self._on_close()
+        return "break"
 
     def _toggle(self) -> None:
         new_value = not bool(self.value_var.get())
@@ -681,10 +786,11 @@ class AddonRelayWidget(RelayWidget):
 
 
 class BinaryWidget(tk.Frame):
-    def __init__(self, master, definition: ParameterDefinition, value: float, on_change, on_resize=None):
+    def __init__(self, master, definition: ParameterDefinition, value: float, on_change, on_close=None, on_resize=None):
         super().__init__(master, bg="#fbf7ef", bd=1, relief=tk.RIDGE)
         self.definition = definition
         self.on_change = on_change
+        self.on_close = on_close
         self.on_resize = on_resize
         self.value_var = tk.BooleanVar(value=bool(value))
         self.min_width = 140
@@ -697,6 +803,26 @@ class BinaryWidget(tk.Frame):
 
         self.header = tk.Frame(self, bg="#244b5a", height=26)
         self.header.pack(fill=tk.X)
+
+        # Close button in the upper-left corner. Use tk.Button (not
+        # ttk.Button) so the colors stay readable on the dark header
+        # background regardless of the active ttk theme.
+        self.close_btn = tk.Button(
+            self.header,
+            text="X",
+            width=2,
+            command=self._on_close,
+            bg="#244b5a",
+            fg="#f7f5ef",
+            activebackground="#3a6776",
+            activeforeground="#ffffff",
+            relief=tk.FLAT,
+            bd=0,
+            padx=4,
+            pady=0,
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.close_btn.pack(side=tk.LEFT, padx=(4, 0), pady=1)
 
         self.title_label = tk.Label(
             self.header,
@@ -739,6 +865,11 @@ class BinaryWidget(tk.Frame):
 
     def get_mode(self) -> str:
         return "binary"
+
+    def _on_close(self) -> None:
+        """Close button handler - notify the app to remove this widget."""
+        if self.on_close is not None:
+            self.on_close(self.definition.key)
 
     def _toggle(self, event=None) -> None:
         new_value = not bool(self.value_var.get())
