@@ -9,3 +9,5 @@ venv/
 .mypy_cache/
 .pytest_cache/
 heishasim_config.json
+*.bat
+*.ps1
