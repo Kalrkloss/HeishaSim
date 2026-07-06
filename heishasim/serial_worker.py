@@ -81,6 +81,17 @@ class HeatPumpSerialServer(threading.Thread):
         except Exception as exc:
             self.on_status(f"Serial error on {self.settings.port}: {exc}")
 
+    # Maximum `length` byte value the simulator accepts. The longest real
+    # Panasonic query we build is build_query() which has length=0x6C (108),
+    # so anything beyond 110 is almost certainly malformed or hostile — we
+    # reject it instead of allocating a multi-hundred-byte buffer.
+    MAX_FRAME_LENGTH = 110
+
+    # Wall-clock budget for accumulating a complete payload across multiple
+    # `read()` calls. Tuned for USB-CDC adapters; subclass and bump if a
+    # deployment uses a slower transport (e.g. RS-232 over long cables).
+    READ_DEADLINE_SECONDS = 0.5
+
     def _read_frame(self, ser) -> bytes | None:
         first: bytes = ser.read(1)
         if not first:
@@ -95,12 +106,28 @@ class HeatPumpSerialServer(threading.Thread):
             return None
 
         length: int = length_byte[0]
-        total: int = length + 3
-        remaining: int = total - 2
-        payload: bytes = ser.read(remaining)
-        if len(payload) != remaining:
+        # Reject oversize / malformed lengths up-front so a hostile `length`
+        # byte can't lock the receive loop into a huge blocking read.
+        if length > self.MAX_FRAME_LENGTH:
             return None
-        return bytes([header, length]) + payload
+        remaining: int = length + 1  # total - 2 = length + 3 - 2
+
+        # USB-serial adapters and similar transports regularly return FEWER
+        # bytes than requested from a single `read()`. We accumulate the
+        # payload across as many reads as needed, bounded by a wall-clock
+        # deadline. Without this, a short read used to silently drop the
+        # frame and leave the partial bytes in the OS buffer, corrupting the
+        # next frame's header.
+        deadline = time.monotonic() + self.READ_DEADLINE_SECONDS
+        payload = bytearray()
+        while len(payload) < remaining:
+            chunk = ser.read(remaining - len(payload))
+            if chunk:
+                payload.extend(chunk)
+                continue
+            if time.monotonic() > deadline:
+                return None
+        return bytes([header, length]) + bytes(payload)
 
     def _build_response(self, frame: bytes) -> bytes | None:
         header = frame[0]

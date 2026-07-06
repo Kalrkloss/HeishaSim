@@ -308,6 +308,95 @@ def test_read_frame_real_startup_query():
         assert_equal(result[0], 0x31, "Startup header 0x31")
 
 
+def test_read_frame_partial_reads_accumulate():
+    """USB-serial adapters may return fewer bytes than requested from a
+    single ``read()``. ``_read_frame`` must loop until the full frame is
+    assembled instead of bailing out and leaving partial bytes in the OS
+    buffer (which would corrupt the next frame's header).
+    """
+    from heishasim.serial_worker import HeatPumpSerialServer, SerialSettings
+
+    state = HeatPumpState()
+    server = HeatPumpSerialServer(
+        settings=SerialSettings(port="MOCK"),
+        state=state,
+        on_status=lambda _: None,
+        on_frame=lambda _: None,
+    )
+
+    frame = make_frame(0x71, 108)  # 112 bytes total (header + length + 109 payload + checksum)
+    chunk_size = 5
+
+    class ChunkedSerial:
+        """Mock serial that returns at most ``chunk_size`` bytes per call,
+        streaming the underlying frame sequentially. Mimics USB-serial
+        adapters that deliver data in small bursts under load.
+        """
+
+        def __init__(self):
+            self._pos = 0
+
+        def read(self, size):
+            n = min(size, chunk_size)
+            if self._pos >= len(frame):
+                return b""
+            piece = frame[self._pos : self._pos + n]
+            self._pos += len(piece)
+            return piece
+
+    ser = ChunkedSerial()
+    result = server._read_frame(ser)
+    # _read_frame reads header(1) + length(1) + payload(length+1) and returns
+    # those 111 bytes WITHOUT consuming the trailing checksum byte, so
+    # compare against the payload portion, not the full frame.
+    expected_payload = frame[:111]
+    assert_true(result is not None, "Partial reads accumulate into a complete frame")
+    if result:
+        assert_equal(len(result), 111, "Returned frame is 111 bytes (excludes trailing checksum)")
+        assert_equal(result, expected_payload, "Returned frame matches original bytes (excluding checksum)")
+
+
+def test_read_frame_length_too_large_returns_none():
+    """length > MAX_FRAME_LENGTH (110) should be rejected before any
+    payload read so a hostile or malformed frame cannot lock the read loop
+    into a huge blocking read.
+    """
+    from heishasim.serial_worker import HeatPumpSerialServer, SerialSettings
+
+    state = HeatPumpState()
+    server = HeatPumpSerialServer(
+        settings=SerialSettings(port="MOCK"),
+        state=state,
+        on_status=lambda _: None,
+        on_frame=lambda _: None,
+    )
+
+    # length=200 would otherwise try to read 201 bytes after the header.
+    ser = MockSerial(read_data=bytes([0x71, 200]))
+    result = server._read_frame(ser)
+    assert_equal(result, None, "length=200 (above MAX_FRAME_LENGTH) returns None without payload read")
+
+
+def test_read_frame_deadline_returns_none_when_no_payload():
+    """If ``read()`` always returns empty bytes after a valid header+length,
+    the deadline should kick in and return None instead of hanging forever.
+    """
+    from heishasim.serial_worker import HeatPumpSerialServer, SerialSettings
+
+    state = HeatPumpState()
+    server = HeatPumpSerialServer(
+        settings=SerialSettings(port="MOCK"),
+        state=state,
+        on_status=lambda _: None,
+        on_frame=lambda _: None,
+    )
+
+    # Provide header (0x71) + length (0x0A = 10 -> 11 bytes total), then no payload.
+    ser = MockSerial(read_data=bytes([0x71, 0x0A]))
+    result = server._read_frame(ser)
+    assert_equal(result, None, "Empty-payload read returns None after deadline")
+
+
 # ---------------------------------------------------------------------------
 # HeatPumpSerialServer._build_response tests
 # ---------------------------------------------------------------------------
@@ -1353,6 +1442,9 @@ if __name__ == "__main__":
     test_read_frame_large_payload()
     test_read_frame_real_query()
     test_read_frame_real_startup_query()
+    test_read_frame_partial_reads_accumulate()
+    test_read_frame_length_too_large_returns_none()
+    test_read_frame_deadline_returns_none_when_no_payload()
 
     # _build_response tests
     test_build_response_startup_header()

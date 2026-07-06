@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import queue
 import tkinter as tk
 from collections.abc import Callable
@@ -669,49 +670,35 @@ class HeishaSimApp(tk.Tk):
     def _bind_cz_taw1_relay_drag(self, widget: AddonRelayWidget, window_id: int, key: str, bring_to_front: Callable[[str], None] | None = None) -> None:
         if bring_to_front is None:
             bring_to_front = self._bring_cz_taw1_widget_to_front
-
-        def start(event):
-            bring_to_front(key)
-            self.dragging["item"] = window_id
-            self.dragging["x"] = event.x_root
-            self.dragging["y"] = event.y_root
-
-        def drag(event):
-            if self.dragging["item"] != window_id:
-                return
-            dx = event.x_root - self.dragging["x"]
-            dy = event.y_root - self.dragging["y"]
-            self.canvas.move(window_id, dx, dy)
-            self.dragging["x"] = event.x_root
-            self.dragging["y"] = event.y_root
-
-        def stop(_event):
-            if self.dragging["item"] != window_id:
-                return
-            self.dragging["item"] = None
-            coords = self.canvas.coords(window_id)
-            if coords:
-                self.config_data.setdefault("cz_taw1_relay_positions", {})[key] = {
-                    "x": int(coords[0]),
-                    "y": int(coords[1]),
-                }
-
-        widget.header.bind("<ButtonPress-1>", start)
-        widget.header.bind("<B1-Motion>", drag)
-        widget.header.bind("<ButtonRelease-1>", stop)
-        widget.title_label.bind("<ButtonPress-1>", start)
-        widget.title_label.bind("<B1-Motion>", drag)
-        widget.title_label.bind("<ButtonRelease-1>", stop)
+        self._bind_canvas_drag(
+            widget.header,
+            widget.title_label,
+            window_id,
+            key,
+            bring_to_front,
+            "cz_taw1_relay_positions",
+        )
 
     def _sync_cz_taw1_menu_state(self) -> None:
         addon_enabled = bool(self.config_data.get("addon_enabled"))
         with contextlib.suppress(tk.TclError):
             self.parameters_menu.entryconfig(self.cz_taw1_menu_index, state=(tk.NORMAL if addon_enabled else tk.DISABLED))
 
-    def _bind_drag(self, widget: ParameterWidget, window_id: int, key: str, bring_to_front: Callable[[str], None] | None = None) -> None:
-        if bring_to_front is None:
-            bring_to_front = self._bring_widget_to_front
+    def _bind_canvas_drag(
+        self,
+        header: tk.Widget,
+        title_label: tk.Widget,
+        window_id: int,
+        key: str,
+        bring_to_front: Callable[[str], None],
+        positions_key: str,
+    ) -> None:
+        """Bind drag-to-move handlers on a widget's header and title label.
 
+        Persists the released (x, y) coord into
+        ``self.config_data[positions_key][key]`` so a config reload restores
+        the user's layout. Used for parameter, relay, and CZ-TAW1 widgets.
+        """
         def start(event):
             bring_to_front(key)
             self.dragging["item"] = window_id
@@ -733,51 +720,39 @@ class HeishaSimApp(tk.Tk):
             self.dragging["item"] = None
             coords = self.canvas.coords(window_id)
             if coords:
-                self.config_data.setdefault("widget_positions", {})[key] = {
+                self.config_data.setdefault(positions_key, {})[key] = {
                     "x": int(coords[0]),
                     "y": int(coords[1]),
                 }
 
-        widget.header.bind("<ButtonPress-1>", start)
-        widget.header.bind("<B1-Motion>", drag)
-        widget.header.bind("<ButtonRelease-1>", stop)
-        widget.title_label.bind("<ButtonPress-1>", start)
-        widget.title_label.bind("<B1-Motion>", drag)
-        widget.title_label.bind("<ButtonRelease-1>", stop)
+        header.bind("<ButtonPress-1>", start)
+        header.bind("<B1-Motion>", drag)
+        header.bind("<ButtonRelease-1>", stop)
+        title_label.bind("<ButtonPress-1>", start)
+        title_label.bind("<B1-Motion>", drag)
+        title_label.bind("<ButtonRelease-1>", stop)
+
+    def _bind_drag(self, widget: ParameterWidget, window_id: int, key: str, bring_to_front: Callable[[str], None] | None = None) -> None:
+        if bring_to_front is None:
+            bring_to_front = self._bring_widget_to_front
+        self._bind_canvas_drag(
+            widget.header,
+            widget.title_label,
+            window_id,
+            key,
+            bring_to_front,
+            "widget_positions",
+        )
 
     def _bind_relay_drag(self, widget: RelayWidget, window_id: int, key: str) -> None:
-        def start(event):
-            self._bring_relay_to_front(key)
-            self.dragging["item"] = window_id
-            self.dragging["x"] = event.x_root
-            self.dragging["y"] = event.y_root
-
-        def drag(event):
-            if self.dragging["item"] != window_id:
-                return
-            dx = event.x_root - self.dragging["x"]
-            dy = event.y_root - self.dragging["y"]
-            self.canvas.move(window_id, dx, dy)
-            self.dragging["x"] = event.x_root
-            self.dragging["y"] = event.y_root
-
-        def stop(_event):
-            if self.dragging["item"] != window_id:
-                return
-            self.dragging["item"] = None
-            coords = self.canvas.coords(window_id)
-            if coords:
-                self.config_data.setdefault("relay_positions", {})[key] = {
-                    "x": int(coords[0]),
-                    "y": int(coords[1]),
-                }
-
-        widget.header.bind("<ButtonPress-1>", start)
-        widget.header.bind("<B1-Motion>", drag)
-        widget.header.bind("<ButtonRelease-1>", stop)
-        widget.title_label.bind("<ButtonPress-1>", start)
-        widget.title_label.bind("<B1-Motion>", drag)
-        widget.title_label.bind("<ButtonRelease-1>", stop)
+        self._bind_canvas_drag(
+            widget.header,
+            widget.title_label,
+            window_id,
+            key,
+            self._bring_relay_to_front,
+            "relay_positions",
+        )
 
     def _remember_mode(self, key: str) -> None:
         widget = self.widgets.get(key)
@@ -1068,41 +1043,82 @@ class HeishaSimApp(tk.Tk):
     def _load_config(self) -> None:
         if not CONFIG_FILE.exists():
             return
+        raw_text = ""
         try:
-            loaded = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                self.config_data.update(loaded)
-                self.config_data.setdefault("named_layouts", {})
-                self.config_data.setdefault("latest_layout", {})
-                self.config_data.setdefault("startup_layout", "latest")
-                self.config_data.setdefault("visible_parameters", list(DEFAULT_VISIBLE_PARAMETERS))
-                self.config_data.setdefault("visible_relays", [])
-                self.config_data.setdefault("visible_cz_taw1_relays", [relay.key for relay in CZTAW1_RELAYS])
-                self.config_data.setdefault("visible_cz_taw1_sensor", True)
-                self.config_data.setdefault("widget_modes", {})
-                self.config_data.setdefault("widget_positions", {})
-                self.config_data.setdefault("widget_sizes", {})
-                self.config_data.setdefault("relay_states", {relay.key: relay.default for relay in RELAYS})
-                self.config_data.setdefault("relay_positions", {})
-                self.config_data.setdefault("relay_sizes", {})
-                self.config_data.setdefault("cz_taw1_relay_states", {relay.key: relay.default for relay in CZTAW1_RELAYS})
-                self.config_data.setdefault("cz_taw1_relay_positions", {})
-                self.config_data.setdefault("cz_taw1_relay_sizes", {})
-                self.config_data.setdefault("cz_taw1_external_sensor", CZTAW1_EXTERNAL_SENSOR.default)
-                self.config_data.setdefault("cz_taw1_external_sensor_position", {})
-                self.config_data.setdefault("cz_taw1_external_sensor_size", {})
-                model = self.config_data.get("model", "H/J Generic")
-                self.state_engine.set_model(model)
-                for relay in RELAYS:
-                    self.state_engine.set_relay_state(relay.key, bool(self.config_data["relay_states"].get(relay.key, relay.default)))
-                for relay in CZTAW1_RELAYS:
-                    self.state_engine.set_cz_taw1_relay_state(
-                        relay.key,
-                        bool(self.config_data["cz_taw1_relay_states"].get(relay.key, relay.default)),
-                    )
-                self.state_engine.set_cz_taw1_external_sensor_temp(self.config_data["cz_taw1_external_sensor"])
-        except Exception:
-            pass
+            raw_text = CONFIG_FILE.read_text(encoding="utf-8")
+            loaded = json.loads(raw_text)
+        except Exception as exc:
+            # Don't silently lose the user's saved settings. Back up the
+            # corrupt file and surface the failure in the log panel so the
+            # next `_schedule_log_drain` shows what happened.
+            self._handle_corrupt_config(raw_text, exc)
+            return
+        if not isinstance(loaded, dict):
+            self._handle_corrupt_config(
+                raw_text,
+                ValueError(f"root must be a JSON object, got {type(loaded).__name__}"),
+            )
+            return
+        self.config_data.update(loaded)
+        self.config_data.setdefault("named_layouts", {})
+        self.config_data.setdefault("latest_layout", {})
+        self.config_data.setdefault("startup_layout", "latest")
+        self.config_data.setdefault("visible_parameters", list(DEFAULT_VISIBLE_PARAMETERS))
+        self.config_data.setdefault("visible_relays", [])
+        self.config_data.setdefault("visible_cz_taw1_relays", [relay.key for relay in CZTAW1_RELAYS])
+        self.config_data.setdefault("visible_cz_taw1_sensor", True)
+        self.config_data.setdefault("widget_modes", {})
+        self.config_data.setdefault("widget_positions", {})
+        self.config_data.setdefault("widget_sizes", {})
+        self.config_data.setdefault("relay_states", {relay.key: relay.default for relay in RELAYS})
+        self.config_data.setdefault("relay_positions", {})
+        self.config_data.setdefault("relay_sizes", {})
+        self.config_data.setdefault("cz_taw1_relay_states", {relay.key: relay.default for relay in CZTAW1_RELAYS})
+        self.config_data.setdefault("cz_taw1_relay_positions", {})
+        self.config_data.setdefault("cz_taw1_relay_sizes", {})
+        self.config_data.setdefault("cz_taw1_external_sensor", CZTAW1_EXTERNAL_SENSOR.default)
+        self.config_data.setdefault("cz_taw1_external_sensor_position", {})
+        self.config_data.setdefault("cz_taw1_external_sensor_size", {})
+        model = self.config_data.get("model", "H/J Generic")
+        self.state_engine.set_model(model)
+        for relay in RELAYS:
+            self.state_engine.set_relay_state(relay.key, bool(self.config_data["relay_states"].get(relay.key, relay.default)))
+        for relay in CZTAW1_RELAYS:
+            self.state_engine.set_cz_taw1_relay_state(
+                relay.key,
+                bool(self.config_data["cz_taw1_relay_states"].get(relay.key, relay.default)),
+            )
+        self.state_engine.set_cz_taw1_external_sensor_temp(self.config_data["cz_taw1_external_sensor"])
+
+    def _handle_corrupt_config(self, raw_text: str, exc: BaseException) -> None:
+        """Back up a corrupt / unreadable CONFIG_FILE so the user's saved
+        settings stay recoverable on disk, then queue a log message
+        describing the loss so it shows up in the GUI log panel.
+        """
+        backup = CONFIG_FILE.with_name(CONFIG_FILE.name + ".bak")
+        backup_text = raw_text
+        msg: str
+        try:
+            if not backup_text:
+                try:
+                    backup_text = CONFIG_FILE.read_text(encoding="utf-8")
+                except OSError:
+                    backup_text = ""
+            if backup_text:
+                backup.write_text(backup_text, encoding="utf-8")
+            with contextlib.suppress(OSError):
+                CONFIG_FILE.unlink()
+            msg = (
+                f"Config file was unreadable; backed up to "
+                f"{backup.name} ({exc}). Falling back to defaults."
+            )
+        except OSError as io_exc:
+            msg = (
+                f"Config file was unreadable ({exc}); could not back up "
+                f"({io_exc}). Falling back to defaults."
+            )
+        with contextlib.suppress(queue.Full):
+            self.log_queue.put_nowait(msg)
 
     def _save_config(self) -> None:
         self.config_data["visible_parameters"] = [k for k, v in self.parameter_flags.items() if v.get()]
@@ -1115,7 +1131,9 @@ class HeishaSimApp(tk.Tk):
         self.config_data["cz_taw1_external_sensor"] = self.state_engine.get_cz_taw1_external_sensor_temp()
         self.config_data["latest_layout"] = self._capture_current_layout()
         CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(json.dumps(self.config_data, indent=2), encoding="utf-8")
+        tmp_path = CONFIG_FILE.with_name(CONFIG_FILE.name + ".tmp")
+        tmp_path.write_text(json.dumps(self.config_data, indent=2), encoding="utf-8")
+        os.replace(tmp_path, CONFIG_FILE)
 
     def _on_close(self) -> None:
         if self._closing:

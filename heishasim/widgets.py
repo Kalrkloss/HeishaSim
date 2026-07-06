@@ -9,6 +9,151 @@ from typing import Any
 from .models import DisplayMode, ParameterDefinition, RelayDefinition
 
 
+class _ResizableMixin:
+    """Mixin providing edge-zone drag-to-resize behaviour for widget classes.
+
+    Subclasses must:
+    - Set ``min_width`` / ``min_height`` class attributes.
+    - Define ``self.body`` (inner frame that hosts widget children).
+    - Call ``self._init_resize_state()`` early in __init__ BEFORE
+      ``_bind_resize_events`` and BEFORE rendering any children that the
+      methods need to recurse into.
+    - Call ``self._bind_resize_events()`` after self and self.body exist.
+    - Optionally call ``self._bind_resize_to_children()`` at the end of
+      __init__ to bubble resize handlers into body children. BinaryWidget
+      deliberately skips this so its status_label's <Button-1> binding is
+      not hijacked.
+
+    The ``# type: ignore[attr-defined]`` markers below are because mypy
+    can't see that subclasses will define ``body``, ``on_resize``,
+    ``definition``, etc. - those attributes live on the concrete widget
+    class, not on this mixin.
+    """
+
+    min_width: int = 220
+    min_height: int = 160
+
+    def _init_resize_state(self) -> None:
+        self._resize_state: dict[str, Any] | None = None
+        self._cursor_zone: str | None = None
+
+    def _edge_zone(self, root_x: int, root_y: int) -> str | None:
+        wx = self.winfo_rootx()  # type: ignore[attr-defined]
+        wy = self.winfo_rooty()  # type: ignore[attr-defined]
+        w = self.winfo_width()  # type: ignore[attr-defined]
+        h = self.winfo_height()  # type: ignore[attr-defined]
+        rel_x = root_x - wx
+        rel_y = root_y - wy
+        zone = 12
+        near_right = rel_x >= w - zone
+        near_bottom = rel_y >= h - zone
+        if near_right and near_bottom:
+            return "se"
+        if near_bottom:
+            return "s"
+        if near_right:
+            return "e"
+        return None
+
+    def _on_edge_motion(self, event) -> None:
+        zone = self._edge_zone(event.x_root, event.y_root)
+        cursors = {"se": "sizing", "s": "sb_v_double_arrow", "e": "sb_h_double_arrow", None: ""}
+        new_cursor = cursors.get(zone)
+        if new_cursor != self._cursor_zone:
+            self._cursor_zone = new_cursor
+            self.configure(cursor=new_cursor or "")  # type: ignore[attr-defined]
+
+    def _start_resize(self, event) -> None:
+        zone = self._edge_zone(event.x_root, event.y_root)
+        if zone is None:
+            self._resize_state = None
+            return
+        self._resize_state = {
+            "x": event.x_root,
+            "y": event.y_root,
+            "width": self.winfo_width(),  # type: ignore[attr-defined]
+            "height": self.winfo_height(),  # type: ignore[attr-defined]
+            "zone": zone,
+        }
+
+    def _do_resize(self, event) -> None:
+        if not self._resize_state:
+            return
+        dx = event.x_root - self._resize_state["x"]
+        dy = event.y_root - self._resize_state["y"]
+        zone = self._resize_state["zone"]
+        new_width = self._resize_state["width"]
+        new_height = self._resize_state["height"]
+        if zone in ("e", "se"):
+            new_width = max(self.min_width, self._resize_state["width"] + dx)
+        if zone in ("s", "se"):
+            new_height = max(self.min_height, self._resize_state["height"] + dy)
+        self.configure(width=new_width, height=new_height)  # type: ignore[attr-defined]
+        if self.on_resize is not None:  # type: ignore[attr-defined]
+            self.on_resize(self.definition.key, int(new_width), int(new_height))  # type: ignore[attr-defined]
+
+    def _stop_resize(self, _event) -> None:
+        self._resize_state = None
+
+    def _bind_resize_events(self) -> None:
+        # ``self.body`` is provided by the subclass; bind() is universal to all
+        # tk widgets but mypy still widens the type to ``_ResizableMixin | Any``.
+        body = self.body  # type: ignore[attr-defined]
+        for target in (self, body):
+            target.bind("<Motion>", self._on_edge_motion, add="+")  # type: ignore[union-attr]
+            target.bind("<ButtonPress-1>", self._start_resize, add="+")  # type: ignore[union-attr]
+            target.bind("<B1-Motion>", self._do_resize, add="+")  # type: ignore[union-attr]
+            target.bind("<ButtonRelease-1>", self._stop_resize, add="+")  # type: ignore[union-attr]
+
+    def _bind_resize_to_children(self) -> None:
+        body = self.body  # type: ignore[attr-defined]
+        stack = list(body.winfo_children())
+        while stack:
+            w = stack.pop()
+            try:
+                w.bind("<Motion>", self._on_edge_motion, add="+")
+                w.bind("<ButtonPress-1>", self._start_resize, add="+")
+                w.bind("<B1-Motion>", self._do_resize, add="+")
+                w.bind("<ButtonRelease-1>", self._stop_resize, add="+")
+            except tk.TclError:
+                pass
+            with contextlib.suppress(tk.TclError):
+                stack.extend(w.winfo_children())
+
+
+class _XButtonMixin:
+    """Mixin providing the close-button bindtags trick so real mouse clicks
+    reliably close the widget without dragging or firing the command twice.
+
+    Subclasses must:
+    - Define ``self.close_btn`` as a ``tk.Button`` whose ``command`` is
+      ``self._on_close``.
+    - Implement ``self._on_close()``.
+    - Call ``self._bind_close_btn()`` after constructing ``self.close_btn``.
+    """
+
+    def _bind_close_btn(self) -> None:
+        # Real X clicks must do two things reliably:
+        # 1. NOT start a drag. We bind <ButtonPress-1> and return "break" -
+        #    Tk stops both the close_btn bindtag chain AND ancestor
+        #    propagation for that event.
+        # 2. Close the widget. Returning "break" from <ButtonPress-1> skips
+        #    Tk's Button class binding on press, so the matching
+        #    <ButtonRelease-1> class binding never sees the button as
+        #    "armed" and never invokes `command` for real mouse clicks.
+        #    We bind <ButtonRelease-1> directly to _on_close_btn_release,
+        #    which calls _on_close() and returns "break" so the close_btn
+        #    bindtag chain stops right after - no double-fire. .invoke()
+        #    still works because `command=self._on_close` is set on the
+        #    Button constructor for headless test paths.
+        self.close_btn.bind("<ButtonPress-1>", lambda _event: "break")  # type: ignore[attr-defined]
+        self.close_btn.bind("<ButtonRelease-1>", self._on_close_btn_release)  # type: ignore[attr-defined]
+
+    def _on_close_btn_release(self, _event) -> str:
+        self._on_close()  # type: ignore[attr-defined]
+        return "break"
+
+
 class DialControl(tk.Canvas):
     def __init__(self, master, minimum: float, maximum: float, step: float, command, **kwargs):
         super().__init__(master, width=160, height=160, bg="#fbf7ef", highlightthickness=0, **kwargs)
@@ -162,7 +307,18 @@ class DialControl(tk.Canvas):
         self.create_oval(cx - hub_radius, cy - hub_radius, cx + hub_radius, cy + hub_radius, fill="#244b5a", outline="")
 
 
-class ParameterWidget(tk.Frame):
+class ParameterWidget(_ResizableMixin, _XButtonMixin, tk.Frame):
+    """Numeric / slider / dial parameter control with a draggable, resizable frame.
+
+    Inherits resize handling from ``_ResizableMixin`` (edge-zone drag)
+    and close-button bindtags handling from ``_XButtonMixin`` (so a real
+    mouse click on the X button fires ``_on_close`` instead of starting
+    a drag).
+    """
+
+    min_width = 220
+    min_height = 190
+
     def __init__(self, master, definition: ParameterDefinition, value: float, on_change, on_close=None, on_resize=None):
         super().__init__(master, bg="#fbf7ef", bd=1, relief=tk.RIDGE)
         self.definition = definition
@@ -171,9 +327,7 @@ class ParameterWidget(tk.Frame):
         self.on_resize = on_resize
         self.mode_var = tk.StringVar(value="number")
         self.value_var = tk.DoubleVar(value=value)
-        self.min_width = 220
-        self.min_height = 190
-        self._resize_state: dict[str, Any] | None = None
+        self._init_resize_state()
         self.style = ttk.Style(self)
         self.style_prefix = f"Heisha.{self.definition.key}"
         self.button_style = f"{self.style_prefix}.TButton"
@@ -208,22 +362,7 @@ class ParameterWidget(tk.Frame):
             font=("Segoe UI", 9, "bold"),
         )
         self.close_btn.pack(side=tk.LEFT, padx=(4, 0), pady=2)
-
-        # Real X clicks must do two things reliably:
-        # 1. NOT start a drag. We bind <ButtonPress-1> and return "break" -
-        #    Tk stops both the close_btn bindtag chain AND ancestor
-        #    propagation for that event.
-        # 2. Close the widget. Returning "break" from <ButtonPress-1> skips
-        #    Tk's Button class binding on press, so the matching
-        #    <ButtonRelease-1> class binding never sees the button as
-        #    "armed" and never invokes `command` for real mouse clicks.
-        #    We bind <ButtonRelease-1> directly to _on_close_btn_release,
-        #    which calls _on_close() and returns "break" so the close_btn
-        #    bindtag chain stops right after - no double-fire. .invoke()
-        #    still works because `command=self._on_close` is set on the
-        #    Button constructor for headless test paths.
-        self.close_btn.bind("<ButtonPress-1>", lambda _event: "break")
-        self.close_btn.bind("<ButtonRelease-1>", self._on_close_btn_release)
+        self._bind_close_btn()
 
         self.title_label = tk.Label(
             self.header,
@@ -248,7 +387,6 @@ class ParameterWidget(tk.Frame):
         self.body = tk.Frame(self, bg="#fbf7ef")
         self.body.pack(fill=tk.BOTH, expand=True)
 
-        self._cursor_zone: str | None = None
         self._bind_resize_events()
 
         self._render_mode()
@@ -280,19 +418,6 @@ class ParameterWidget(tk.Frame):
         """Close button handler - notify the app to remove this widget."""
         if self.on_close is not None:
             self.on_close(self.definition.key)
-
-    def _on_close_btn_release(self, _event) -> str:
-        """<ButtonRelease-1> handler that closes the widget on real clicks.
-
-        Required because returning "break" from <ButtonPress-1> skips Tk's
-        Button class binding "arm" step, so the matching <ButtonRelease-1>
-        class binding never invokes `command` for real mouse clicks. We
-        bind <ButtonRelease-1> directly so the close fires reliably;
-        returning "break" stops the close_btn bindtag chain after we run
-        so the command never fires twice.
-        """
-        self._on_close()
-        return "break"
 
     def _adjust(self, direction: int) -> None:
         new_value = self.value_var.get() + (self.definition.step * direction)
@@ -478,89 +603,19 @@ class ParameterWidget(tk.Frame):
         self._render_mode()
         self._bind_resize_to_children()
 
-    def _edge_zone(self, root_x: int, root_y: int) -> str | None:
-        wx = self.winfo_rootx()
-        wy = self.winfo_rooty()
-        w = self.winfo_width()
-        h = self.winfo_height()
-        rel_x = root_x - wx
-        rel_y = root_y - wy
-        zone = 12
-        near_right = rel_x >= w - zone
-        near_bottom = rel_y >= h - zone
-        if near_right and near_bottom:
-            return "se"
-        if near_bottom:
-            return "s"
-        if near_right:
-            return "e"
-        return None
 
-    def _on_edge_motion(self, event) -> None:
-        zone = self._edge_zone(event.x_root, event.y_root)
-        cursors = {"se": "sizing", "s": "sb_v_double_arrow", "e": "sb_h_double_arrow", None: ""}
-        new_cursor = cursors.get(zone)
-        if new_cursor != self._cursor_zone:
-            self._cursor_zone = new_cursor
-            self.configure(cursor=new_cursor or "")
+class RelayWidget(_ResizableMixin, _XButtonMixin, tk.Frame):
+    """ON/OFF relay indicator with a draggable, resizable frame.
 
-    def _start_resize(self, event) -> None:
-        zone = self._edge_zone(event.x_root, event.y_root)
-        if zone is None:
-            self._resize_state = None
-            return
-        self._resize_state = {
-            "x": event.x_root,
-            "y": event.y_root,
-            "width": self.winfo_width(),
-            "height": self.winfo_height(),
-            "zone": zone,
-        }
+    Inherits resize handling from ``_ResizableMixin`` (edge-zone drag)
+    and close-button bindtags handling from ``_XButtonMixin`` so a real
+    mouse click on the X button fires ``_on_close`` instead of starting
+    a drag.
+    """
 
-    def _do_resize(self, event) -> None:
-        if not self._resize_state:
-            return
+    min_width = 220
+    min_height = 160
 
-        dx = event.x_root - self._resize_state["x"]
-        dy = event.y_root - self._resize_state["y"]
-        zone = self._resize_state["zone"]
-        new_width = self._resize_state["width"]
-        new_height = self._resize_state["height"]
-        if zone in ("e", "se"):
-            new_width = max(self.min_width, self._resize_state["width"] + dx)
-        if zone in ("s", "se"):
-            new_height = max(self.min_height, self._resize_state["height"] + dy)
-
-        self.configure(width=new_width, height=new_height)
-        if self.on_resize is not None:
-            self.on_resize(self.definition.key, int(new_width), int(new_height))
-
-    def _stop_resize(self, _event) -> None:
-        self._resize_state = None
-
-    def _bind_resize_events(self) -> None:
-        for target in (self, self.body):
-            target.bind("<Motion>", self._on_edge_motion, add="+")
-            target.bind("<ButtonPress-1>", self._start_resize, add="+")
-            target.bind("<B1-Motion>", self._do_resize, add="+")
-            target.bind("<ButtonRelease-1>", self._stop_resize, add="+")
-
-    def _bind_resize_to_children(self) -> None:
-        stack = list(self.body.winfo_children())
-        while stack:
-            w = stack.pop()
-            try:
-                w.bind("<Motion>", self._on_edge_motion, add="+")
-                w.bind("<ButtonPress-1>", self._start_resize, add="+")
-                w.bind("<B1-Motion>", self._do_resize, add="+")
-                w.bind("<ButtonRelease-1>", self._stop_resize, add="+")
-            except tk.TclError:
-                pass
-            with contextlib.suppress(tk.TclError):
-                stack.extend(w.winfo_children())
-
-
-class RelayWidget(tk.Frame):
     def __init__(self, master, definition: RelayDefinition, value: bool, on_change, on_close=None, on_resize=None):
         super().__init__(master, bg="#fbf7ef", bd=1, relief=tk.RIDGE)
         self.definition = definition
@@ -568,9 +623,7 @@ class RelayWidget(tk.Frame):
         self.on_close = on_close
         self.on_resize = on_resize
         self.value_var = tk.BooleanVar(value=bool(value))
-        self.min_width = 220
-        self.min_height = 160
-        self._resize_state: dict[str, Any] | None = None
+        self._init_resize_state()
 
         self.configure(width=240, height=170)
         self.pack_propagate(False)
@@ -597,16 +650,7 @@ class RelayWidget(tk.Frame):
             font=("Segoe UI", 9, "bold"),
         )
         self.close_btn.pack(side=tk.LEFT, padx=(4, 0), pady=2)
-
-        # See ParameterWidget for the rationale: the drag-prevention
-        # <ButtonPress-1> "break" stops Tk's Button class arm step, so the
-        # matching <ButtonRelease-1> class binding never invokes `command`
-        # for real mouse clicks. We bind <ButtonRelease-1> directly to
-        # _on_close_btn_release so real clicks reliably close the widget,
-        # regardless of class-binding arming. Returns "break" so nothing
-        # else in the close_btn bindtag chain runs after we fire.
-        self.close_btn.bind("<ButtonPress-1>", lambda _event: "break")
-        self.close_btn.bind("<ButtonRelease-1>", self._on_close_btn_release)
+        self._bind_close_btn()
 
         self.title_label = tk.Label(
             self.header,
@@ -641,32 +685,10 @@ class RelayWidget(tk.Frame):
         self.toggle_btn = ttk.Button(self.body, text="", command=self._toggle)
         self.toggle_btn.pack(pady=(0, 8))
 
-        self._cursor_zone: str | None = None
         self._bind_resize_events()
         self._bind_resize_to_children()
 
         self._refresh_visual()
-
-    def _bind_resize_events(self) -> None:
-        for target in (self, self.body):
-            target.bind("<Motion>", self._on_edge_motion, add="+")
-            target.bind("<ButtonPress-1>", self._start_resize, add="+")
-            target.bind("<B1-Motion>", self._do_resize, add="+")
-            target.bind("<ButtonRelease-1>", self._stop_resize, add="+")
-
-    def _bind_resize_to_children(self) -> None:
-        stack = list(self.body.winfo_children())
-        while stack:
-            w = stack.pop()
-            try:
-                w.bind("<Motion>", self._on_edge_motion, add="+")
-                w.bind("<ButtonPress-1>", self._start_resize, add="+")
-                w.bind("<B1-Motion>", self._do_resize, add="+")
-                w.bind("<ButtonRelease-1>", self._stop_resize, add="+")
-            except tk.TclError:
-                pass
-            with contextlib.suppress(tk.TclError):
-                stack.extend(w.winfo_children())
 
     def set_state(self, value: bool) -> None:
         self.value_var.set(bool(value))
@@ -679,19 +701,6 @@ class RelayWidget(tk.Frame):
         """Close button handler - notify the app to remove this widget."""
         if self.on_close is not None:
             self.on_close(self.definition.key)
-
-    def _on_close_btn_release(self, _event) -> str:
-        """<ButtonRelease-1> handler that closes the widget on real clicks.
-
-        Required because returning "break" from <ButtonPress-1> skips Tk's
-        Button class binding "arm" step, so the matching <ButtonRelease-1>
-        class binding never invokes `command` for real mouse clicks. We
-        bind <ButtonRelease-1> directly so the close fires reliably;
-        returning "break" stops the close_btn bindtag chain after we run
-        so the command never fires twice.
-        """
-        self._on_close()
-        return "break"
 
     def _toggle(self) -> None:
         new_value = not bool(self.value_var.get())
@@ -710,72 +719,23 @@ class RelayWidget(tk.Frame):
         self.detail_label.configure(text=detail, bg=body_bg, fg=accent)
         self.toggle_btn.configure(text="Switch Off" if enabled else "Switch On")
 
-    def _edge_zone(self, root_x: int, root_y: int) -> str | None:
-        wx = self.winfo_rootx()
-        wy = self.winfo_rooty()
-        w = self.winfo_width()
-        h = self.winfo_height()
-        rel_x = root_x - wx
-        rel_y = root_y - wy
-        zone = 12
-        near_right = rel_x >= w - zone
-        near_bottom = rel_y >= h - zone
-        if near_right and near_bottom:
-            return "se"
-        if near_bottom:
-            return "s"
-        if near_right:
-            return "e"
-        return None
-
-    def _on_edge_motion(self, event) -> None:
-        zone = self._edge_zone(event.x_root, event.y_root)
-        cursors = {"se": "sizing", "s": "sb_v_double_arrow", "e": "sb_h_double_arrow", None: ""}
-        new_cursor = cursors.get(zone)
-        if new_cursor != self._cursor_zone:
-            self._cursor_zone = new_cursor
-            self.configure(cursor=new_cursor or "")
-
-    def _start_resize(self, event) -> None:
-        zone = self._edge_zone(event.x_root, event.y_root)
-        if zone is None:
-            self._resize_state = None
-            return
-        self._resize_state = {
-            "x": event.x_root,
-            "y": event.y_root,
-            "width": self.winfo_width(),
-            "height": self.winfo_height(),
-            "zone": zone,
-        }
-
-    def _do_resize(self, event) -> None:
-        if not self._resize_state:
-            return
-
-        dx = event.x_root - self._resize_state["x"]
-        dy = event.y_root - self._resize_state["y"]
-        zone = self._resize_state["zone"]
-        new_width = self._resize_state["width"]
-        new_height = self._resize_state["height"]
-        if zone in ("e", "se"):
-            new_width = max(self.min_width, self._resize_state["width"] + dx)
-        if zone in ("s", "se"):
-            new_height = max(self.min_height, self._resize_state["height"] + dy)
-
-        self.configure(width=new_width, height=new_height)
-        if self.on_resize is not None:
-            self.on_resize(self.definition.key, int(new_width), int(new_height))
-
-    def _stop_resize(self, _event) -> None:
-        self._resize_state = None
-
 
 class AddonRelayWidget(RelayWidget):
     pass
 
 
-class BinaryWidget(tk.Frame):
+class BinaryWidget(_ResizableMixin, tk.Frame):
+    """Full-body on/off toggle widget for boolean parameters.
+
+    Inherits resize handling from ``_ResizableMixin``. Does NOT inherit
+    ``_XButtonMixin`` because the close button relies on Tk's default
+    Button class bindings (the widget body's ``<Button-1>`` toggle binding
+    must take precedence over resize drag on the body itself).
+    """
+
+    min_width = 140
+    min_height = 100
+
     def __init__(self, master, definition: ParameterDefinition, value: float, on_change, on_close=None, on_resize=None):
         super().__init__(master, bg="#fbf7ef", bd=1, relief=tk.RIDGE)
         self.definition = definition
@@ -783,10 +743,7 @@ class BinaryWidget(tk.Frame):
         self.on_close = on_close
         self.on_resize = on_resize
         self.value_var = tk.BooleanVar(value=bool(value))
-        self.min_width = 140
-        self.min_height = 100
-        self._resize_state: dict[str, Any] | None = None
-        self._cursor_zone: str | None = None
+        self._init_resize_state()
 
         self.configure(width=200, height=120)
         self.pack_propagate(False)
@@ -873,68 +830,3 @@ class BinaryWidget(tk.Frame):
         text = "ON" if enabled else "OFF"
         self.body.configure(bg=bg)
         self.status_label.configure(text=text, bg=bg)
-
-    def _edge_zone(self, root_x: int, root_y: int) -> str | None:
-        wx = self.winfo_rootx()
-        wy = self.winfo_rooty()
-        w = self.winfo_width()
-        h = self.winfo_height()
-        rel_x = root_x - wx
-        rel_y = root_y - wy
-        zone = 12
-        near_right = rel_x >= w - zone
-        near_bottom = rel_y >= h - zone
-        if near_right and near_bottom:
-            return "se"
-        if near_bottom:
-            return "s"
-        if near_right:
-            return "e"
-        return None
-
-    def _on_edge_motion(self, event) -> None:
-        zone = self._edge_zone(event.x_root, event.y_root)
-        cursors = {"se": "sizing", "s": "sb_v_double_arrow", "e": "sb_h_double_arrow", None: ""}
-        new_cursor = cursors.get(zone)
-        if new_cursor != self._cursor_zone:
-            self._cursor_zone = new_cursor
-            self.configure(cursor=new_cursor or "")
-
-    def _bind_resize_events(self) -> None:
-        for target in (self, self.body):
-            target.bind("<Motion>", self._on_edge_motion, add="+")
-            target.bind("<ButtonPress-1>", self._start_resize, add="+")
-            target.bind("<B1-Motion>", self._do_resize, add="+")
-            target.bind("<ButtonRelease-1>", self._stop_resize, add="+")
-
-    def _start_resize(self, event) -> None:
-        zone = self._edge_zone(event.x_root, event.y_root)
-        if zone is None:
-            self._resize_state = None
-            return
-        self._resize_state = {
-            "x": event.x_root,
-            "y": event.y_root,
-            "width": self.winfo_width(),
-            "height": self.winfo_height(),
-            "zone": zone,
-        }
-
-    def _do_resize(self, event) -> None:
-        if not self._resize_state:
-            return
-        dx = event.x_root - self._resize_state["x"]
-        dy = event.y_root - self._resize_state["y"]
-        zone = self._resize_state["zone"]
-        new_width = self._resize_state["width"]
-        new_height = self._resize_state["height"]
-        if zone in ("e", "se"):
-            new_width = max(self.min_width, self._resize_state["width"] + dx)
-        if zone in ("s", "se"):
-            new_height = max(self.min_height, self._resize_state["height"] + dy)
-        self.configure(width=new_width, height=new_height)
-        if self.on_resize is not None:
-            self.on_resize(self.definition.key, int(new_width), int(new_height))
-
-    def _stop_resize(self, _event) -> None:
-        self._resize_state = None
